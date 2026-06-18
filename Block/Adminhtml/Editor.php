@@ -92,17 +92,40 @@ class Editor extends Template
     private function getStoreList(): array
     {
         $stores = [];
-        $storeCollection = $this->systemStore->getStoreValuesForForm(false, true);
+        $this->collectStoreOptions($this->systemStore->getStoreValuesForForm(false, true), $stores);
 
-        foreach ($storeCollection as $item) {
-            if (isset($item['value']) && is_numeric($item['value'])) {
+        return $stores;
+    }
+
+    /**
+     * Recursively collect store-view leaves from the nested option structure
+     *
+     * getStoreValuesForForm() returns a tree (website => group => store views) where the
+     * individual store views are nested inside the parent entries' "value" arrays. Walk the
+     * tree and keep only the leaves whose "value" is a numeric store id.
+     *
+     * @param array<int, array<string, mixed>> $options
+     * @param array<int, array{id: int, name: string}> $stores
+     * @return void
+     */
+    private function collectStoreOptions(array $options, array &$stores): void
+    {
+        foreach ($options as $item) {
+            if (!isset($item['value'])) {
+                continue;
+            }
+
+            if (is_array($item['value'])) {
+                $this->collectStoreOptions($item['value'], $stores);
+                continue;
+            }
+
+            if (is_numeric($item['value'])) {
                 $stores[] = [
                     'id' => (int)$item['value'],
-                    'name' => (string)$item['label'],
+                    'name' => trim(str_replace("\xc2\xa0", ' ', (string)$item['label'])),
                 ];
             }
         }
-
-        return $stores;
     }
 }
