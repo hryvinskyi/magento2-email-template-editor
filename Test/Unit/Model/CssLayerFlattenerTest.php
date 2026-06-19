@@ -67,11 +67,20 @@ class CssLayerFlattenerTest extends TestCase
         self::assertStringContainsString('.keep', $out);
     }
 
-    public function testMultipleLayerNamesAreUnwrapped(): void
+    public function testMultipleLayerNamesAreUnwrappedWhenNoDropName(): void
     {
-        $out = $this->flattener->flatten('@layer theme, base, utilities { .x { color: red; } }');
+        $out = $this->flattener->flatten('@layer theme, utilities { .x { color: red; } }');
         self::assertStringContainsString('.x { color: red; }', $out);
-        self::assertStringNotContainsString('@layer theme, base, utilities', $out);
+        self::assertStringNotContainsString('@layer theme, utilities', $out);
+    }
+
+    public function testCommaListIncludingDropNameDropsBlock(): void
+    {
+        // A @layer block whose name list mentions `base` or `properties` is treated as
+        // belonging to a drop layer (Tailwind v4 doesn't emit this shape, but it's the
+        // safer interpretation since the rule was opted into a drop layer at all).
+        $out = $this->flattener->flatten('@layer theme, base { .x { color: red; } }');
+        self::assertStringNotContainsString('.x', $out);
     }
 
     public function testNestedAtRulesInsidePreservedLayerAreUnwrapped(): void
@@ -87,5 +96,37 @@ class CssLayerFlattenerTest extends TestCase
     {
         $css = '.a { color: red; } .b { background: blue; }';
         self::assertSame($css, $this->flattener->flatten($css));
+    }
+
+    /**
+     * Tailwind v4's `@layer base` contains an `@supports` chain with three levels of
+     * nested at-rules (e.g. `@supports { ::placeholder { @supports { color: ... } } }`).
+     * A non-recursive matcher caps at 2 levels of nesting and silently fails to match
+     * the whole block - leaving preflight rules in the output where they get inlined
+     * onto every email element (`display: block; max-width: 100%; …`).
+     */
+    public function testDeeplyNestedSupportsInsideLayerBaseStillDropped(): void
+    {
+        $css = <<<'CSS'
+@layer base {
+  *, ::after, ::before { box-sizing: border-box; margin: 0; }
+  img, video { max-width: 100%; height: auto; }
+  @supports (not (-webkit-appearance: -apple-pay-button)) or (contain-intrinsic-size: 1px) {
+    ::placeholder {
+      color: currentcolor;
+      @supports (color: color-mix(in lab, red, red)) {
+        color: color-mix(in oklab, currentcolor 50%, transparent);
+      }
+    }
+  }
+}
+@layer utilities { .invert { filter: invert(100%); } }
+CSS;
+        $out = $this->flattener->flatten($css);
+
+        self::assertStringNotContainsString('@layer base', $out);
+        self::assertStringNotContainsString('box-sizing: border-box', $out);
+        self::assertStringNotContainsString('max-width: 100%', $out);
+        self::assertStringContainsString('.invert', $out);
     }
 }

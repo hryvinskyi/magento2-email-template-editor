@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2026-06-19
+
+### Fixed
+- Tailwind v4's `@layer base` block contains nested `@supports` chains 3-4 levels
+  deep (the `::placeholder` `color-mix` fallback uses a doubly-nested `@supports`).
+  `CssLayerFlattener`'s drop regex capped at 2 levels of brace nesting, so the
+  whole `@layer base` block silently survived flattening. Emogrifier then inlined
+  the v4 preflight rules (`*, ::after { box-sizing: border-box; … }`,
+  `img, video { display: block; max-width: 100%; height: auto; … }`) onto every
+  email element, which leaked `display: block`/`max-width: 100%`/etc. into the
+  inline styles. Rewrote the flattener with PCRE recursive subpatterns (`(?2)`)
+  and possessive quantifiers so arbitrary nesting is handled in linear time.
+- Same nesting cap occasionally allowed `@layer properties { @supports { *, ::before,
+  ::after { --tw-invert: initial; … } } }` to survive too. The resolver would then
+  pick up `--tw-invert: initial` as the global value and substitute it back into
+  `.invert`'s `filter:` declaration, producing `filter: initial initial …` which
+  Emogrifier dropped as invalid - so `<img class="invert">` got no inline filter
+  at all. With proper recursive flattening, the scope-reset is dropped consistently
+  and only the local `--tw-invert: invert(100%)` survives.
+- Tailwind v4's class-name scanner is text-based and can miss `class="…"` on
+  elements whose attribute list is interleaved with Magento `{{if …}}` / `{{var …}}`
+  directives (e.g. the typical `<img {{if logo_width}}…{{/if}} class="invert"/>`
+  pattern). The iframe now also bakes a hidden shadow `<div>` carrying every class
+  name extracted from the source via a robust regex pass, so the scanner sees every
+  utility regardless of how messy the surrounding markup is.
+
 ## [1.1.0] - 2026-06-19
 
 ### Added

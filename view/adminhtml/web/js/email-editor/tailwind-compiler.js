@@ -130,7 +130,8 @@ define(['jquery'], function ($) {
             var self = this,
                 deferred = $.Deferred(),
                 themeCss = this._themeCss || '',
-                bakedHtml = this._bakedHtml || '';
+                bakedHtml = this._bakedHtml || '',
+                classShadow = this._collectClassNames(bakedHtml);
 
             this._readyDeferred = deferred;
             this._appliedThemeKey = themeCss + '\0' + bakedHtml;
@@ -182,6 +183,13 @@ define(['jquery'], function ($) {
                 '});',
                 '<\/script>',
                 '</head><body>',
+                // Belt-and-braces class-name surface for Tailwind v4's scanner. The original
+                // template HTML often interleaves Magento `{{if ...}}` / `{{var ...}}` directives
+                // *inside* tag attribute lists (e.g. <img {{if logo_width}} width=... class="invert"/>);
+                // v4's text-based scanner can lose track of the class attribute on such elements
+                // and silently skip its utilities. Surfacing every class name found anywhere in
+                // the source via this clean wrapper guarantees the scanner sees them all.
+                '<div id="tw-class-shadow" hidden aria-hidden="true" class="' + classShadow + '"></div>',
                 '<div id="tw-content">',
                 bakedHtml,
                 '</div>',
@@ -354,6 +362,51 @@ define(['jquery'], function ($) {
             }
 
             return doc.body.innerHTML;
+        },
+
+        /**
+         * Collect every class name that appears anywhere in the source HTML.
+         *
+         * Tailwind v4's scanner is text-based and can drop class attributes that sit
+         * next to Magento `{{if ...}}` / `{{var ...}}` directives inside the same tag
+         * (the directives confuse its attribute tokenizer). Surfacing every class
+         * name in a separate clean wrapper element guarantees the scanner sees them
+         * all regardless of how messy the original markup is.
+         *
+         * @param {string} html
+         * @returns {string} space-separated, HTML-escaped class-name list
+         * @private
+         */
+        _collectClassNames: function (html) {
+            if (!html) {
+                return '';
+            }
+
+            var classRegex = /class\s*=\s*(?:"([^"]*)"|'([^']*)')/gi,
+                seen = Object.create(null),
+                ordered = [],
+                match,
+                token,
+                names,
+                i;
+
+            while ((match = classRegex.exec(html)) !== null) {
+                names = (match[1] || match[2] || '').split(/\s+/);
+                for (i = 0; i < names.length; i++) {
+                    token = names[i];
+                    if (!token || seen[token]) {
+                        continue;
+                    }
+                    seen[token] = true;
+                    ordered.push(token);
+                }
+            }
+
+            return ordered.join(' ')
+                .replace(/&/g, '&amp;')
+                .replace(/"/g, '&quot;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;');
         },
 
         /**
