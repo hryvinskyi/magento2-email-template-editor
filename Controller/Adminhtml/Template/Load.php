@@ -46,6 +46,8 @@ class Load extends Action implements HttpGetActionInterface
         $entityId = $this->getRequest()->getParam('entity_id')
             ?? $this->getRequest()->getParam('draft_entity_id');
         $defaultOnly = (bool)$this->getRequest()->getParam('default_only', false);
+        $legacyIdRaw = $this->getRequest()->getParam('legacy_id');
+        $legacyId = $legacyIdRaw !== null && $legacyIdRaw !== '' ? (int)$legacyIdRaw : null;
 
         if ($identifier === '') {
             return $resultJson->setData([
@@ -59,7 +61,8 @@ class Load extends Action implements HttpGetActionInterface
                 $identifier,
                 $storeId,
                 $defaultOnly ? null : ($entityId !== null && $entityId !== '' ? (int)$entityId : null),
-                $defaultOnly
+                $defaultOnly,
+                $defaultOnly ? null : $legacyId
             );
 
             return $resultJson->setData([

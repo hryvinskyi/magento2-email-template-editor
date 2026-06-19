@@ -24,6 +24,8 @@
                 type="Hryvinskyi\EmailTemplateEditor\Model\ThemeRepository"/>
     <preference for="Hryvinskyi\EmailTemplateEditor\Api\TemplateOverrideRepositoryInterface"
                 type="Hryvinskyi\EmailTemplateEditor\Model\TemplateOverrideRepository"/>
+    <preference for="Hryvinskyi\EmailTemplateEditor\Api\LegacyTemplateRepositoryInterface"
+                type="Hryvinskyi\EmailTemplateEditor\Model\LegacyTemplateRepository"/>
     <preference for="Hryvinskyi\EmailTemplateEditor\Api\TemplateVersionRepositoryInterface"
                 type="Hryvinskyi\EmailTemplateEditor\Model\TemplateVersionRepository"/>
     <preference for="Hryvinskyi\EmailTemplateEditor\Api\TemplatePublisherInterface"

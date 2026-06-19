@@ -56,11 +56,14 @@
                 </div>
                 <!-- ko if: overrides.length > 0 -->
                 <div class="ete-sidebar-tpl-children" data-bind="visible: $parents[1].isTemplateExpanded(id), foreach: overrides">
-                    <div class="ete-sidebar-override" data-bind="click: function(d, e) { e.stopPropagation(); $parents[2].selectOverrideEntry($data, $parent); }, css: {'ete-override-active': $parents[2].isOverrideRowActive($data), 'ete-override-disabled': is_active === false}">
+                    <div class="ete-sidebar-override" data-bind="click: function(d, e) { e.stopPropagation(); $parents[2].selectOverrideEntry($data, $parent); }, css: {'ete-override-active': $parents[2].isOverrideRowActive($data), 'ete-override-disabled': is_active === false, 'ete-override-legacy': $data.source === 'legacy'}">
                         <span class="ete-sidebar-override-dot" data-bind="css: 'ete-dot-' + status + (is_active === false ? ' ete-dot-disabled' : '')" data-bind-title="status"></span>
                         <div class="ete-sidebar-override-info">
                             <div class="ete-sidebar-override-titlerow">
                                 <span class="ete-sidebar-override-label" data-bind="text: label"></span>
+                                <!-- ko if: $data.source === 'legacy' -->
+                                <span class="ete-sidebar-override-legacy-badge" data-bind="attr: {title: $t('Stored in Magento\'s legacy email_template table — edit here to migrate to a managed override')}, i18n: 'Magento DB'"></span>
+                                <!-- /ko -->
                                 <!-- ko if: $data.pending_draft -->
                                 <span class="ete-sidebar-override-pending" data-bind="attr: {title: $t('Unpublished draft — publish to apply')}, i18n: 'draft pending'"></span>
                                 <!-- /ko -->
@@ -79,17 +82,19 @@
                             </span>
                         </div>
                         <div class="ete-sidebar-override-actions">
-                            <!-- ko if: status === 'published' -->
+                            <!-- ko if: $data.source !== 'legacy' && status === 'published' -->
                             <span class="ete-sidebar-override-schedule" data-bind="click: function(d, e) { e.stopPropagation(); $parents[2].editSchedule($data, $parent); }" title="Edit Schedule">
                                 <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
                             </span>
                             <!-- /ko -->
+                            <!-- ko if: $data.source !== 'legacy' -->
                             <span class="ete-sidebar-override-rename" data-bind="click: function(d, e) { e.stopPropagation(); $parents[2].renameOverride($data); }" title="Rename">
                                 <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg>
                             </span>
                             <span class="ete-sidebar-override-delete" data-bind="click: function(d, e) { e.stopPropagation(); $parents[2].deleteOverride($data); }" title="Delete">
                                 <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
                             </span>
+                            <!-- /ko -->
                         </div>
                     </div>
                 </div>

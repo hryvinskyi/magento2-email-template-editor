@@ -76,19 +76,75 @@ class EmailTemplatePlugin
             return $result;
         }
 
+        $this->applyOverlay($result, $templateId);
+
+        return $result;
+    }
+
+    /**
+     * After loading by primary key (legacy email_template row), overlay a managed override
+     *
+     * Mirrors afterLoadDefault for the path AbstractTemplate::loadByConfigPath takes
+     * when system configuration stores a numeric template_id rather than a file
+     * identifier — i.e. a legacy Magento "Transactional Emails" override. Without this
+     * hook the legacy row's stored template_text/subject is what gets sent, even when
+     * an admin has subsequently edited the template through this module's editor.
+     *
+     * @param AbstractTemplate $subject
+     * @param AbstractTemplate $result
+     * @return AbstractTemplate
+     */
+    public function afterLoad(
+        AbstractTemplate $subject,
+        AbstractTemplate $result
+    ): AbstractTemplate {
+        if ($this->pluginBypassFlag->isBypassed()) {
+            return $result;
+        }
+
+        // Mirror AdminEditControllerPlugin's fallback: a legacy row without an
+        // orig_template_code (a wholly custom template_code) gets seeded into a
+        // managed override under its template_code, so the overlay must look it
+        // up by that same key for the runtime substitution to fire.
+        $identifier = (string)($subject->getOrigTemplateCode() ?? '');
+        if ($identifier === '') {
+            $identifier = (string)($subject->getTemplateCode() ?? '');
+        }
+
+        if ($identifier === '') {
+            return $result;
+        }
+
+        $this->applyOverlay($result, $identifier);
+
+        return $result;
+    }
+
+    /**
+     * Apply the best-matching managed override's content/subject/CSS to a loaded template
+     *
+     * Shared between afterLoadDefault (file-load path) and afterLoad (legacy-row
+     * path). The "enabled" config gates live transactional emails; inside the admin
+     * editor preview the override is always applied so the editor reflects it
+     * regardless of the module switch.
+     *
+     * @param AbstractTemplate $result
+     * @param string $templateId
+     * @return void
+     */
+    private function applyOverlay(AbstractTemplate $result, string $templateId): void
+    {
         try {
             $storeId = (int)$this->storeManager->getStore()->getId();
 
-            // The "enabled" config gates live transactional emails. Inside the admin editor
-            // preview the override is always applied so the editor reflects it regardless.
             if (!$this->config->isEnabled($storeId) && !$this->editorContextFlag->isActive()) {
-                return $result;
+                return;
             }
 
             $override = $this->loadPublishedOverride($templateId, $storeId, $this->resolveThemeCode($result));
 
             if ($override === null || !$override->getIsActive()) {
-                return $result;
+                return;
             }
 
             $result->setTemplateText($override->getTemplateContent());
@@ -106,8 +162,6 @@ class EmailTemplatePlugin
                 'EmailTemplateEditor plugin error for template "' . $templateId . '": ' . $e->getMessage()
             );
         }
-
-        return $result;
     }
 
     /**

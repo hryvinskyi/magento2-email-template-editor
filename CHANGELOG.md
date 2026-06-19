@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.2] - 2026-06-19
+
+### Fixed
+- Opening an existing legacy DB-customised email template from Magento's
+  "Transactional Emails" grid (`iopaneladmin/admin/email_template/index/`) previously
+  rendered the bundled file default in the new editor instead of the override the admin
+  had set in the legacy grid. The redirect plugin dropped the legacy row's primary key
+  and `TemplateLoader` never consulted the legacy `email_template` table for content, so
+  any customisation looked like it had vanished. The editor now opens with the legacy
+  row's stored `template_text` / `template_subject` / `template_styles` seeded for
+  editing, and shows a "Seeded from a legacy Magento email template" banner until the
+  first save migrates the content into a managed override.
+
+### Added
+- **Legacy `email_template` row integration.** Templates customised via Magento's
+  standard "Transactional Emails" grid now appear in the editor sidebar as a
+  "Magento DB"-badged override child of their `orig_template_code` parent, scoped
+  to the store views their `template_id` is referenced from in `core_config_data`
+  (resolved through `BackendTemplate::getSystemConfigPathsWhereCurrentlyUsed`). A
+  legacy entry is hidden once a managed override exists for the same identifier in
+  either the requested scope or the default scope, since the runtime overlay
+  represents it through the managed row in that case. Save Draft / Publish create a
+  managed `hryvinskyi_email_template_override` through the existing flow; the legacy
+  row and `core_config_data` are left untouched.
+- `EmailTemplatePlugin` gained an `afterLoad` hook (alongside the existing
+  `afterLoadDefault`) that overlays a matching managed override onto loads from the
+  `email_template` table — i.e. system-config bindings that reference a numeric
+  `template_id`. Combined with the seed-on-edit flow, edits to legacy templates apply
+  at send time without rewriting any `core_config_data` row. The overlay body is
+  factored into a shared `applyOverlay` helper. Legacy rows without an
+  `orig_template_code` fall back to `template_code` for the overlay lookup so wholly
+  custom legacy templates also pick up edits.
+- New `Api/LegacyTemplateRepositoryInterface` + `Model/LegacyTemplateRepository`
+  wraps `Magento\Email\Model\BackendTemplate` to expose `getByOrigCode`, `getById`
+  (with `pluginBypassFlag->enable()` so the runtime overlay does not recursively
+  fire for the editor's own reads), and `getScopeBindings` — which resolves the
+  default scope to `[0]`, websites to their expanded store list, and stores to the
+  specific id.
+
 ## [1.1.1] - 2026-06-19
 
 ### Fixed

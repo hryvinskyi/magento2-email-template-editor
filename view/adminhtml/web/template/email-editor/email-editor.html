@@ -35,6 +35,20 @@
     </div>
     <!-- /ko -->
 
+    <!-- Legacy seed notice: editing the content of a Magento legacy email_template row that has not yet been migrated to a managed override -->
+    <!-- ko if: isLegacySeed -->
+    <div class="ete-draft-notice ete-legacy-notice">
+        <svg class="ete-draft-notice-icon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        <span class="ete-draft-notice-text">
+            <span data-bind="i18n: 'Seeded from a legacy Magento email template'"></span>
+            <!-- ko if: legacyLabel() -->
+            <span data-bind="text: ' (' + legacyLabel() + ')'"></span>
+            <!-- /ko -->
+            <span data-bind="i18n: '. Save Draft or Publish to migrate this content into a managed override; the original legacy row stays in Magento\'s Transactional Emails grid untouched.'"></span>
+        </span>
+    </div>
+    <!-- /ko -->
+
     <!-- Main Content Area -->
     <div class="ete-main">
 

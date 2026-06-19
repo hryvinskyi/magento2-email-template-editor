@@ -23,6 +23,7 @@ define([
             storeId: 0,
             stores: [],
             selectedTemplate: '',
+            selectedLegacyId: null,
             isEnabled: true
         },
 
@@ -106,7 +107,9 @@ define([
                 'editScheduleFrom',
                 'editScheduleTo',
                 'editScheduleOverrideLabel',
-                'viewingDefault'
+                'viewingDefault',
+                'isLegacySeed',
+                'legacyLabel'
             ]);
 
             this.isInitialLoading(true);
@@ -143,6 +146,8 @@ define([
             this.editScheduleTo('');
             this.editScheduleOverrideLabel('');
             this.viewingDefault(false);
+            this.isLegacySeed(false);
+            this.legacyLabel('');
 
             // Editing is locked while the published (live) version is shown alongside an
             // existing working draft: edits here would otherwise fork into and overwrite
@@ -204,8 +209,8 @@ define([
             var self = this;
 
             registry.get(this.name + '.templateSidebar', function (sidebar) {
-                var debouncedLoadTemplate = _.debounce(function (identifier, entityId) {
-                    self.loadTemplate(identifier, entityId);
+                var debouncedLoadTemplate = _.debounce(function (identifier, entityId, legacyId) {
+                    self.loadTemplate(identifier, entityId, legacyId);
                 }, 300);
 
                 self.templateSidebar = sidebar;
@@ -217,6 +222,17 @@ define([
 
                 sidebar.on('overrideSelect', function (data) {
                     self.viewingDefault(false);
+
+                    if (data.override.source === 'legacy') {
+                        debouncedLoadTemplate(
+                            data.template.id,
+                            null,
+                            parseInt(data.override.legacy_id, 10)
+                        );
+
+                        return;
+                    }
+
                     debouncedLoadTemplate(
                         data.template.id,
                         data.override.entity_id
@@ -612,9 +628,26 @@ define([
                 sidebar.load(self.getEffectiveStoreId()).done(function () {
                     self.isInitialLoading(false);
 
-                    if (self.selectedTemplate) {
-                        sidebar.select(self.selectedTemplate);
+                    if (!self.selectedTemplate) {
+                        return;
                     }
+
+                    var legacyId = parseInt(self.selectedLegacyId, 10) || null;
+
+                    if (legacyId) {
+                        // Redirected here from Magento's legacy "Transactional Emails"
+                        // edit page: open the legacy row's content as the seed instead
+                        // of taking the default-view branch (which would show the
+                        // bundled file content and hide the customisation).
+                        sidebar.activeId(self.selectedTemplate);
+                        sidebar.activeLegacyId(legacyId);
+                        self.viewingDefault(false);
+                        self.loadTemplate(self.selectedTemplate, null, legacyId);
+
+                        return;
+                    }
+
+                    sidebar.select(self.selectedTemplate);
                 }).fail(function () {
                     self.isInitialLoading(false);
                 });
@@ -968,10 +1001,16 @@ define([
         /**
          * Load a template by its identifier, optionally loading a specific draft.
          *
+         * When `legacyId` is supplied and no managed override exists yet for the
+         * identifier, the server seeds the editor from the legacy email_template
+         * row's stored content and returns is_legacy_seed=true so the seed banner
+         * can be shown.
+         *
          * @param {string} identifier
          * @param {string|number} [entityId]
+         * @param {string|number} [legacyId]
          */
-        loadTemplate: function (identifier, entityId) {
+        loadTemplate: function (identifier, entityId, legacyId) {
             var self = this,
                 requestData;
 
@@ -994,14 +1033,18 @@ define([
                 requestData.entity_id = entityId;
             }
 
+            if (legacyId) {
+                requestData.legacy_id = legacyId;
+            }
+
             if (this.viewingDefault()) {
                 requestData.default_only = 1;
             }
 
-            this._loadRequestId = identifier + ':' + (entityId || '');
+            this._loadRequestId = identifier + ':' + (entityId || '') + ':' + (legacyId || '');
 
             return this._ajax(this.urls.load, requestData).done(function (res) {
-                if (self._loadRequestId !== identifier + ':' + (entityId || '')) {
+                if (self._loadRequestId !== identifier + ':' + (entityId || '') + ':' + (legacyId || '')) {
                     return;
                 }
 
@@ -1055,6 +1098,12 @@ define([
                     self.currentTemplateStatus(res.template.status || '');
                     self.hasDraft(res.template.has_draft || false);
                     self.hasPublished(res.template.has_published || false);
+                    // Seeded-from-legacy mode: the editor is showing the contents of a
+                    // Magento legacy email_template row that has not yet been migrated
+                    // into a managed override. The save flow naturally promotes it on
+                    // first Save Draft / Publish; until then the seed banner is shown.
+                    self.isLegacySeed(!isDefault && !!res.template.is_legacy_seed);
+                    self.legacyLabel(isDefault ? '' : (res.template.legacy_label || ''));
                     // Remember the working draft so "Back to draft" can return to it even
                     // while the published (live) version is being viewed.
                     self._workingDraftEntityId = self._pickWorkingDraftId(res.template.drafts);

@@ -26,12 +26,13 @@ define([
         initialize: function () {
             this._super();
 
-            this.observe(['searchQuery', 'groups', 'activeId', 'activeOverrideId', 'filterMode']);
+            this.observe(['searchQuery', 'groups', 'activeId', 'activeOverrideId', 'activeLegacyId', 'filterMode']);
 
             this.searchQuery('');
             this.groups([]);
             this.activeId('');
             this.activeOverrideId(null);
+            this.activeLegacyId(null);
             this.filterMode('all');
 
             this.expandedGroups = ko.observable({});
@@ -132,6 +133,13 @@ define([
             }
 
             return overrides.some(function (override) {
+                if (override.source === 'legacy') {
+                    var ids = override.store_ids || [];
+
+                    // store 0 in the bindings means "applies to all stores".
+                    return ids.indexOf(0) !== -1 || ids.indexOf(storeId) !== -1;
+                }
+
                 return parseInt(override.store_id, 10) === storeId;
             });
         },
@@ -154,6 +162,12 @@ define([
             var scoped = $.extend({}, tpl);
 
             scoped.overrides = (tpl.overrides || []).filter(function (override) {
+                if (override.source === 'legacy') {
+                    var ids = override.store_ids || [];
+
+                    return ids.indexOf(0) !== -1 || ids.indexOf(storeId) !== -1;
+                }
+
                 return parseInt(override.store_id, 10) === storeId;
             });
 
@@ -180,6 +194,10 @@ define([
                 i;
 
             for (i = 0; i < overrides.length; i++) {
+                if (overrides[i].source === 'legacy') {
+                    continue;
+                }
+
                 if (published === null
                     && overrides[i].status === 'published'
                     && !overrides[i].active_from
@@ -196,6 +214,10 @@ define([
             // Pair with the most recent draft (highest entity_id), matching the server's
             // notion of the working draft; any older drafts stay as their own rows.
             for (i = 0; i < overrides.length; i++) {
+                if (overrides[i].source === 'legacy') {
+                    continue;
+                }
+
                 if (overrides[i].status === 'draft'
                     && parseInt(overrides[i].store_id, 10) === parseInt(published.store_id, 10)
                     && (draft === null
@@ -301,6 +323,7 @@ define([
          */
         selectTemplate: function (templateData) {
             this.activeOverrideId(null);
+            this.activeLegacyId(null);
             this.select(templateData.id);
         },
 
@@ -312,7 +335,15 @@ define([
          */
         selectOverride: function (overrideData, templateData) {
             this.activeId(templateData.id);
-            this.activeOverrideId(overrideData.entity_id);
+
+            if (overrideData.source === 'legacy') {
+                this.activeOverrideId(null);
+                this.activeLegacyId(parseInt(overrideData.legacy_id, 10));
+            } else {
+                this.activeLegacyId(null);
+                this.activeOverrideId(overrideData.entity_id);
+            }
+
             this.trigger('overrideSelect', {
                 override: overrideData,
                 template: templateData
@@ -338,6 +369,14 @@ define([
          * @return {boolean}
          */
         isOverrideRowActive: function (overrideData) {
+            if (overrideData.source === 'legacy') {
+                var activeLegacy = this.activeLegacyId();
+
+                return activeLegacy !== null
+                    && activeLegacy !== undefined
+                    && parseInt(overrideData.legacy_id, 10) === activeLegacy;
+            }
+
             var active = this.activeOverrideId();
 
             if (active === null || active === undefined) {
@@ -425,6 +464,7 @@ define([
             var self = this,
                 currentActiveId = this.activeId(),
                 currentActiveOverrideId = this.activeOverrideId(),
+                currentActiveLegacyId = this.activeLegacyId(),
                 currentExpandedGroups = Object.assign({}, this.expandedGroups()),
                 currentExpandedTemplates = Object.assign({}, this.expandedTemplates());
 
@@ -438,6 +478,10 @@ define([
 
                 if (currentActiveOverrideId) {
                     self.activeOverrideId(currentActiveOverrideId);
+                }
+
+                if (currentActiveLegacyId) {
+                    self.activeLegacyId(currentActiveLegacyId);
                 }
             });
         },

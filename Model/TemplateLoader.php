@@ -10,10 +10,12 @@ declare(strict_types=1);
 namespace Hryvinskyi\EmailTemplateEditor\Model;
 
 use Hryvinskyi\EmailTemplateEditor\Api\Data\TemplateOverrideInterface;
+use Hryvinskyi\EmailTemplateEditor\Api\LegacyTemplateRepositoryInterface;
 use Hryvinskyi\EmailTemplateEditor\Api\PluginBypassFlagInterface;
 use Hryvinskyi\EmailTemplateEditor\Api\TemplateAreaResolverInterface;
 use Hryvinskyi\EmailTemplateEditor\Api\TemplateLoaderInterface;
 use Hryvinskyi\EmailTemplateEditor\Api\TemplateOverrideRepositoryInterface;
+use Magento\Email\Model\BackendTemplate;
 use Magento\Email\Model\Template\Config as EmailConfig;
 use Magento\Email\Model\TemplateFactory;
 use Magento\Framework\Filesystem;
@@ -33,6 +35,7 @@ class TemplateLoader implements TemplateLoaderInterface
      * @param LoggerInterface $logger
      * @param PluginBypassFlagInterface $pluginBypassFlag
      * @param Emulation $appEmulation
+     * @param LegacyTemplateRepositoryInterface $legacyRepository
      */
     public function __construct(
         private readonly EmailConfig $emailConfig,
@@ -43,7 +46,8 @@ class TemplateLoader implements TemplateLoaderInterface
         private readonly ReadFactory $readFactory,
         private readonly LoggerInterface $logger,
         private readonly PluginBypassFlagInterface $pluginBypassFlag,
-        private readonly Emulation $appEmulation
+        private readonly Emulation $appEmulation,
+        private readonly LegacyTemplateRepositoryInterface $legacyRepository
     ) {
     }
 
@@ -86,7 +90,8 @@ class TemplateLoader implements TemplateLoaderInterface
         string $identifier,
         int $storeId = 0,
         ?int $overrideEntityId = null,
-        bool $defaultOnly = false
+        bool $defaultOnly = false,
+        ?int $legacyId = null
     ): array {
         $area = $this->areaResolver->resolve($identifier);
         $defaultData = $this->loadDefaultTemplate($identifier, $storeId, $area);
@@ -94,23 +99,21 @@ class TemplateLoader implements TemplateLoaderInterface
         $published = $this->getPublishedWithFallback($identifier, $storeId);
 
         if ($defaultOnly) {
-            return [
-                'identifier' => $identifier,
-                'label' => $this->getTemplateLabel($identifier),
-                'module' => $this->extractModuleName($identifier),
-                'area' => $area,
+            return $this->buildBasePayload(
+                $identifier,
+                $area,
+                $defaultData,
+                $defaultData['content'],
+                $defaultData['subject'],
+                ''
+            ) + [
                 'entity_id' => null,
                 'store_id' => $storeId,
-                'default_content' => $defaultData['content'],
-                'default_subject' => $defaultData['subject'],
-                'default_styles' => $defaultData['styles'],
-                'content' => $defaultData['content'],
-                'subject' => $defaultData['subject'],
-                'custom_css' => '',
                 'tailwind_css' => '',
-                'variables' => $defaultData['variables'],
-                'type' => $defaultData['type'],
                 'is_override' => false,
+                'is_legacy_seed' => false,
+                'legacy_id' => null,
+                'legacy_label' => '',
                 'status' => '',
                 'has_published' => $published !== null,
                 'has_draft' => !empty($drafts),
@@ -148,6 +151,25 @@ class TemplateLoader implements TemplateLoaderInterface
             $activeOverride = $published;
         }
 
+        // No managed override exists yet for this identifier+scope: when a legacy
+        // email_template id was supplied, seed the editor from that row's content.
+        // Saving the seeded edit creates a managed override via the existing
+        // SaveDraft / Publish flow.
+        if ($activeOverride === null && $legacyId !== null) {
+            $legacyRow = $this->legacyRepository->getById($legacyId);
+            if ($legacyRow !== null) {
+                return $this->buildLegacySeedPayload(
+                    $identifier,
+                    $area,
+                    $defaultData,
+                    $drafts,
+                    $published,
+                    $legacyRow,
+                    $legacyId
+                );
+            }
+        }
+
         $isActiveDraft = $activeOverride !== null
             && $activeOverride->getStatus() === TemplateOverrideInterface::STATUS_DRAFT;
         $isActivePublished = $activeOverride !== null
@@ -176,6 +198,9 @@ class TemplateLoader implements TemplateLoaderInterface
             'variables' => $defaultData['variables'],
             'type' => $defaultData['type'],
             'is_override' => $activeOverride !== null,
+            'is_legacy_seed' => false,
+            'legacy_id' => null,
+            'legacy_label' => '',
             'status' => $activeOverride !== null ? $activeOverride->getStatus() : '',
             'has_published' => $published !== null,
             'has_draft' => !empty($drafts),
@@ -186,6 +211,101 @@ class TemplateLoader implements TemplateLoaderInterface
             'active_to' => $scheduleSource !== null ? ($scheduleSource->getActiveTo() ?? '') : '',
             'sample_provider_code' => $activeOverride !== null ? ($activeOverride->getSampleProviderCode() ?? '') : '',
             'custom_variables' => $activeOverride !== null ? ($activeOverride->getCustomVariables() ?? '') : '',
+        ];
+    }
+
+    /**
+     * Build the immutable identifier/label/area/default block shared by every payload
+     *
+     * @param string $identifier
+     * @param string $area
+     * @param array{content: string, subject: string, styles: string, variables: string, type: int} $defaultData
+     * @param string $content
+     * @param string $subject
+     * @param string $customCss
+     * @return array<string, mixed>
+     */
+    private function buildBasePayload(
+        string $identifier,
+        string $area,
+        array $defaultData,
+        string $content,
+        string $subject,
+        string $customCss
+    ): array {
+        return [
+            'identifier' => $identifier,
+            'label' => $this->getTemplateLabel($identifier),
+            'module' => $this->extractModuleName($identifier),
+            'area' => $area,
+            'default_content' => $defaultData['content'],
+            'default_subject' => $defaultData['subject'],
+            'default_styles' => $defaultData['styles'],
+            'content' => $content,
+            'subject' => $subject,
+            'custom_css' => $customCss,
+            'variables' => $defaultData['variables'],
+            'type' => $defaultData['type'],
+        ];
+    }
+
+    /**
+     * Build the response payload that seeds the editor from a legacy email_template row
+     *
+     * Maps the legacy row's template_text/subject/styles into the editor's content/
+     * subject/custom_css fields, sets store_id to the legacy row's first config-bound
+     * scope so the eventual managed-override save lands at the right scope, and marks
+     * the response with is_legacy_seed = true so the UI shows the seed banner.
+     *
+     * @param string $identifier
+     * @param string $area
+     * @param array{content: string, subject: string, styles: string, variables: string, type: int} $defaultData
+     * @param TemplateOverrideInterface[] $drafts
+     * @param TemplateOverrideInterface|null $published
+     * @param BackendTemplate $legacyRow
+     * @param int $legacyId
+     * @return array<string, mixed>
+     */
+    private function buildLegacySeedPayload(
+        string $identifier,
+        string $area,
+        array $defaultData,
+        array $drafts,
+        ?TemplateOverrideInterface $published,
+        BackendTemplate $legacyRow,
+        int $legacyId
+    ): array {
+        $bindings = $this->legacyRepository->getScopeBindings($legacyId);
+        $resolvedStoreId = !empty($bindings) ? (int)$bindings[0] : 0;
+        $content = (string)($legacyRow->getTemplateText() ?? '');
+        $subject = (string)($legacyRow->getTemplateSubject() ?? '');
+        $customCss = (string)($legacyRow->getTemplateStyles() ?? '');
+
+        return $this->buildBasePayload(
+            $identifier,
+            $area,
+            $defaultData,
+            $content,
+            $subject,
+            $customCss
+        ) + [
+            'entity_id' => null,
+            'store_id' => $resolvedStoreId,
+            'tailwind_css' => '',
+            'is_override' => true,
+            'is_legacy_seed' => true,
+            'legacy_id' => $legacyId,
+            'legacy_label' => (string)($legacyRow->getTemplateCode() ?? ''),
+            'status' => '',
+            'has_published' => $published !== null,
+            'has_draft' => !empty($drafts),
+            'published' => $published !== null ? $this->buildOverrideData($published) : null,
+            'draft' => null,
+            'drafts' => array_map([$this, 'buildOverrideData'], $drafts),
+            'active_from' => '',
+            'active_to' => '',
+            'sample_provider_code' => '',
+            'custom_variables' => '',
         ];
     }
 
@@ -376,6 +496,13 @@ class TemplateLoader implements TemplateLoaderInterface
     /**
      * Get all overrides (draft, published, scheduled) for a template as sidebar children
      *
+     * Legacy Magento email_template rows whose orig_template_code matches the
+     * identifier are appended as a separate "source = legacy" subset. A legacy
+     * row is hidden when a managed override already exists for the same
+     * identifier in either the requested scope or the default ("All Store
+     * Views") scope, since the runtime overlay represents the legacy row through
+     * the managed one in that case.
+     *
      * @param string $templateId
      * @param int $storeId
      * @return array<int, array{entity_id: int, label: string, status: string, scheduled_at: string|null, last_edited_by: string|null, updated_at: string|null}>
@@ -417,7 +544,100 @@ class TemplateLoader implements TemplateLoaderInterface
             // Silently fall through
         }
 
+        try {
+            $managedScopes = [];
+            foreach ($overrides as $entry) {
+                $managedScopes[(int)$entry['store_id']] = true;
+            }
+
+            foreach ($this->legacyRepository->getByOrigCode($templateId) as $legacyRow) {
+                $legacyEntityId = (int)$legacyRow->getId();
+                if ($legacyEntityId <= 0) {
+                    continue;
+                }
+
+                $bindings = $this->legacyRepository->getScopeBindings($legacyEntityId);
+                if ($this->isLegacyCoveredByManaged($bindings, $managedScopes)) {
+                    continue;
+                }
+
+                $overrides[] = $this->buildLegacyOverrideSummary($legacyRow, $bindings);
+            }
+        } catch (\Exception) {
+            // Silently fall through
+        }
+
         return $overrides;
+    }
+
+    /**
+     * Decide whether existing managed overrides already cover all of a legacy row's bindings
+     *
+     * A managed override at store 0 covers every binding via the runtime overlay
+     * fallback ladder; otherwise each binding is covered only by a managed
+     * override that lives at that specific store id.
+     *
+     * @param int[] $bindings
+     * @param array<int, bool> $managedScopes
+     * @return bool
+     */
+    private function isLegacyCoveredByManaged(array $bindings, array $managedScopes): bool
+    {
+        if (empty($bindings)) {
+            // No bindings means the legacy row is dangling — nothing managed can
+            // currently cover it. Surface it so the admin can clean it up.
+            return false;
+        }
+
+        if (isset($managedScopes[0])) {
+            return true;
+        }
+
+        foreach ($bindings as $storeId) {
+            if (!isset($managedScopes[(int)$storeId])) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Build a sidebar summary entry for a legacy email_template row
+     *
+     * @param BackendTemplate $legacyRow
+     * @param int[] $storeIds
+     * @return array<string, mixed>
+     */
+    private function buildLegacyOverrideSummary(BackendTemplate $legacyRow, array $storeIds): array
+    {
+        $primaryStoreId = !empty($storeIds) ? (int)$storeIds[0] : 0;
+        $label = (string)($legacyRow->getTemplateCode() ?? '');
+        if ($label === '') {
+            $label = (string)__('Legacy template #%1', $legacyRow->getId());
+        }
+
+        $modifiedAt = (string)($legacyRow->getModifiedAt() ?? $legacyRow->getAddedAt() ?? '');
+
+        return [
+            'entity_id' => null,
+            'legacy_id' => (int)$legacyRow->getId(),
+            'source' => 'legacy',
+            'store_id' => $primaryStoreId,
+            'store_ids' => array_values(array_map('intval', $storeIds)),
+            'label' => $label,
+            'version_comment' => null,
+            'draft_name' => null,
+            'status' => 'legacy',
+            'scheduled_at' => null,
+            'active_from' => null,
+            'active_to' => null,
+            'created_by_username' => null,
+            'last_edited_by' => null,
+            'created_at' => (string)($legacyRow->getAddedAt() ?? ''),
+            'updated_at' => $modifiedAt,
+            'is_active' => true,
+        ];
     }
 
     /**
@@ -440,7 +660,10 @@ class TemplateLoader implements TemplateLoaderInterface
 
         return [
             'entity_id' => $override->getEntityId(),
+            'legacy_id' => null,
+            'source' => 'managed',
             'store_id' => (int)$override->getStoreId(),
+            'store_ids' => [(int)$override->getStoreId()],
             'label' => $label,
             'version_comment' => $comment,
             'draft_name' => $draftName,

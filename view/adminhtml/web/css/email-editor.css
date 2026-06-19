@@ -1111,6 +1111,15 @@
     color: #2f6fb0;
 }
 
+.ete-draft-notice.ete-legacy-notice {
+    background: #eef2ff;
+    color: #3730a3;
+}
+
+.ete-draft-notice.ete-legacy-notice .ete-draft-notice-icon {
+    color: #6366f1;
+}
+
 /* Level 3: Override children */
 .ete-sidebar-tpl-children {
     padding-left: 24px;
@@ -1211,6 +1220,26 @@
     border-radius: 50%;
     background: #eb5202;
     flex-shrink: 0;
+}
+
+.ete-sidebar-override-legacy-badge {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 1px 7px;
+    border-radius: 8px;
+    background: #e0e7ff;
+    color: #3730a3;
+    font-size: 10px;
+    font-weight: 600;
+    white-space: nowrap;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.ete-dot-legacy {
+    background: #6366f1 !important;
 }
 
 .ete-sidebar-override-meta {

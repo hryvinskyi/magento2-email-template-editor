@@ -42,6 +42,10 @@ class Editor extends Template
     public function getEditorConfig(): string
     {
         $storeId = (int)$this->getRequest()->getParam('store', 0);
+        $legacyIdRaw = $this->getRequest()->getParam('legacy_id');
+        $selectedLegacyId = $legacyIdRaw !== null && $legacyIdRaw !== ''
+            ? (int)$legacyIdRaw
+            : null;
 
         $config = [
             'urls' => [
@@ -78,6 +82,7 @@ class Editor extends Template
             'stores' => $this->getStoreList(),
             'formKey' => $this->getFormKey(),
             'selectedTemplate' => (string)$this->getRequest()->getParam('template', ''),
+            'selectedLegacyId' => $selectedLegacyId,
             'isEnabled' => $this->config->isEnabled($storeId),
         ];
 

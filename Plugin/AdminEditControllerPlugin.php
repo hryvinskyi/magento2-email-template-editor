@@ -63,7 +63,13 @@ class AdminEditControllerPlugin
             }
 
             $redirect = $this->redirectFactory->create();
-            $redirect->setPath('emaileditor/editor/index', ['template' => $templateCode]);
+            $redirect->setPath(
+                'emaileditor/editor/index',
+                [
+                    'template' => $templateCode,
+                    'legacy_id' => $templateId,
+                ]
+            );
 
             return $redirect;
         } catch (\Exception $e) {
