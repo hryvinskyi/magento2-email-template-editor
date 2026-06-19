@@ -13,7 +13,7 @@ interface ThemeInterface
 {
     public const THEME_ID = 'theme_id';
     public const NAME = 'name';
-    public const THEME_JSON = 'theme_json';
+    public const THEME_CSS = 'theme_css';
     public const IS_DEFAULT = 'is_default';
     public const STORE_ID = 'store_id';
     public const CREATED_AT = 'created_at';
@@ -50,19 +50,19 @@ interface ThemeInterface
     public function setName(string $name): self;
 
     /**
-     * Get theme JSON configuration
+     * Get theme CSS (Tailwind v4 `@theme {…}` block)
      *
      * @return string|null
      */
-    public function getThemeJson(): ?string;
+    public function getThemeCss(): ?string;
 
     /**
-     * Set theme JSON configuration
+     * Set theme CSS (Tailwind v4 `@theme {…}` block)
      *
-     * @param string $themeJson
+     * @param string $themeCss
      * @return $this
      */
-    public function setThemeJson(string $themeJson): self;
+    public function setThemeCss(string $themeCss): self;
 
     /**
      * Get is default flag

@@ -376,4 +376,38 @@ class TemplateOverride extends AbstractModel implements TemplateOverrideInterfac
     {
         return $this->setData(self::IS_ACTIVE, $isActive ? 1 : 0);
     }
+
+    /**
+     * {@inheritDoc}
+     */
+    public function getSampleProviderCode(): ?string
+    {
+        $code = $this->getData(self::SAMPLE_PROVIDER_CODE);
+
+        return $code !== null ? (string)$code : null;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public function setSampleProviderCode(?string $providerCode): self
+    {
+        return $this->setData(self::SAMPLE_PROVIDER_CODE, $providerCode);
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public function getCustomVariables(): ?string
+    {
+        return $this->getData(self::CUSTOM_VARIABLES);
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public function setCustomVariables(?string $customVariables): self
+    {
+        return $this->setData(self::CUSTOM_VARIABLES, $customVariables);
+    }
 }

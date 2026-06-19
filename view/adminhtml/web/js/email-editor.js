@@ -41,11 +41,26 @@ define([
         /** @type {string|null} */
         _currentEntityId: null,
 
+        /** @type {number|null} */
+        _workingDraftEntityId: null,
+
+        /** @type {number|null} */
+        _currentOverrideStoreId: null,
+
+        /** @type {string|null} */
+        _customDataIdentifier: null,
+
         /** @type {boolean} */
         _suppressChangeEvents: false,
 
         /** @type {Array<jQuery.jqXHR>} */
         _pendingRequests: [],
+
+        /** @type {number} Monotonic generation guarding preview rendering against stale responses */
+        _previewToken: 0,
+
+        /** @type {string} */
+        _storeStorageKey: 'hryvinskyi_email_editor_store_id',
 
         /**
          * Initialize the email editor orchestrator, create observables,
@@ -72,7 +87,6 @@ define([
                 'showExpiredBadge',
                 'tailwindCssOutput',
                 'showCustomData',
-                'customDataJson',
                 'selectedProvider',
                 'providers',
                 'dataSourceLabel',
@@ -80,6 +94,7 @@ define([
                 'entitySearchQuery',
                 'entityResults',
                 'selectedEntityId',
+                'sidebarCollapsed',
                 'templateCollapsed',
                 'cssCollapsed',
                 'themeCollapsed',
@@ -109,7 +124,6 @@ define([
             this.showExpiredBadge(false);
             this.tailwindCssOutput('No Tailwind CSS generated yet.');
             this.showCustomData(false);
-            this.customDataJson('');
             this.selectedProvider('mock');
             this.providers([]);
             this.dataSourceLabel('Data Source');
@@ -117,6 +131,7 @@ define([
             this.entitySearchQuery('');
             this.entityResults([]);
             this.selectedEntityId('');
+            this.sidebarCollapsed(false);
             this.templateCollapsed(false);
             this.cssCollapsed(true);
             this.themeCollapsed(true);
@@ -128,6 +143,20 @@ define([
             this.editScheduleTo('');
             this.editScheduleOverrideLabel('');
             this.viewingDefault(false);
+
+            // Editing is locked while the published (live) version is shown alongside an
+            // existing working draft: edits here would otherwise fork into and overwrite
+            // that draft, so the editor is switched to read-only until the user returns
+            // to the draft via "Back to draft".
+            var self = this;
+
+            this.isReadOnly = ko.computed(function () {
+                return self.currentTemplateStatus() === 'published' && self.hasDraft();
+            });
+
+            this.isReadOnly.subscribe(function () {
+                self.applyReadOnlyState();
+            });
 
             this._editScheduleEntityId = null;
 
@@ -159,6 +188,7 @@ define([
             this.confirmModalType('danger');
             this._confirmCallback = null;
 
+            this._restoreStoreId();
             this._initSubscriptions();
             this._initKeyboardShortcuts();
             this._loadInitialData();
@@ -212,15 +242,44 @@ define([
                 editor.on('contentChange', function () {
                     self.onContentChange();
                 });
+
+                // Sync the editor with the current read-only state in case it
+                // finished wiring up after the state was already set.
+                self.applyReadOnlyState();
             });
 
             registry.get(this.name + '.customCssEditor', function (cssEditor) {
                 self.customCssEditor = cssEditor;
+                self.applyReadOnlyState();
 
                 self.cssCollapsed.subscribe(function (collapsed) {
                     if (!collapsed) {
                         setTimeout(function () {
                             cssEditor.refresh();
+                        }, 50);
+                    }
+                });
+            });
+
+            registry.get(this.name + '.customDataEditor', function (dataEditor) {
+                self.customDataEditor = dataEditor;
+
+                dataEditor.on('customDataChange', function () {
+                    self.onCustomDataChange();
+                });
+
+                self.showCustomData.subscribe(function (visible) {
+                    if (visible) {
+                        setTimeout(function () {
+                            dataEditor.refresh();
+                        }, 50);
+                    }
+                });
+
+                self.customDataCollapsed.subscribe(function (collapsed) {
+                    if (!collapsed) {
+                        setTimeout(function () {
+                            dataEditor.refresh();
                         }, 50);
                     }
                 });
@@ -329,6 +388,9 @@ define([
 
             registry.get(this.name + '.draftManager', function (manager) {
                 self.draftManager = manager;
+                // The draft manager calls back into the editor to auto-save and to
+                // resolve the saved-status label; without this reference both no-op.
+                manager.parentComponent = self;
             });
 
             registry.get(this.name + '.draftListPanel', function (draftList) {
@@ -377,12 +439,6 @@ define([
                 }
             });
 
-            this.customDataJson.subscribe(function () {
-                if (!self._suppressChangeEvents) {
-                    self.schedulePreview();
-                }
-            });
-
             this.selectedProvider.subscribe(function () {
                 self._updateProviderUI();
 
@@ -404,7 +460,24 @@ define([
             });
 
             this.storeId.subscribe(function () {
-                self.renderPreview();
+                // Remember the chosen store view so it is preselected after a reload.
+                self._persistStoreId();
+
+                // Store-view scope decides which override (and which themed default) applies,
+                // so rebuild the template tree for the new store and reload the open template.
+                // Both fall back to the default scope server-side; loadTemplate re-previews.
+                if (self.templateSidebar) {
+                    self.templateSidebar.load(self.getEffectiveStoreId());
+                }
+
+                if (self.currentTemplateId()) {
+                    if (!self.viewingDefault()) {
+                        self._currentEntityId = null;
+                    }
+                    self.reloadTemplate();
+                } else {
+                    self.renderPreview();
+                }
             });
         },
 
@@ -536,7 +609,7 @@ define([
             tailwindCompiler.init();
 
             registry.get(this.name + '.templateSidebar', function (sidebar) {
-                sidebar.load().done(function () {
+                sidebar.load(self.getEffectiveStoreId()).done(function () {
                     self.isInitialLoading(false);
 
                     if (self.selectedTemplate) {
@@ -605,6 +678,95 @@ define([
         },
 
         /**
+         * Reveal the editor-panel scrollbar briefly while scrolling.
+         *
+         * The bar is hidden by default and otherwise only appears on hover; the class is
+         * dropped after a short idle window so it fades back out once scrolling stops.
+         *
+         * @param {Object} data
+         * @param {Event} event
+         * @return {boolean}
+         */
+        handlePanelLeftScroll: function (data, event) {
+            var el = event.currentTarget;
+
+            el.classList.add('ete-scrolling');
+
+            if (this._panelLeftScrollTimer) {
+                clearTimeout(this._panelLeftScrollTimer);
+            }
+
+            this._panelLeftScrollTimer = setTimeout(function () {
+                el.classList.remove('ete-scrolling');
+            }, 800);
+
+            return true;
+        },
+
+        /**
+         * Restore the last used store view from local storage.
+         *
+         * An explicit store passed in the URL (reflected as a non-zero initial
+         * value) always wins; otherwise the remembered store is preselected,
+         * provided it still exists in the current store list. The effective
+         * store is then persisted so URL-driven selections are remembered too.
+         */
+        _restoreStoreId: function () {
+            var saved = this._readStoredStoreId();
+
+            if (this.getEffectiveStoreId() === 0 && saved !== null && this._storeExists(saved)) {
+                this.storeId(saved);
+            }
+
+            this._persistStoreId();
+        },
+
+        /**
+         * Read the persisted store ID from local storage.
+         *
+         * @return {number|null}
+         */
+        _readStoredStoreId: function () {
+            try {
+                var raw = window.localStorage.getItem(this._storeStorageKey),
+                    value;
+
+                if (raw === null || raw === '') {
+                    return null;
+                }
+
+                value = parseInt(raw, 10);
+
+                return isNaN(value) ? null : value;
+            } catch (e) {
+                return null;
+            }
+        },
+
+        /**
+         * Persist the current effective store ID to local storage.
+         */
+        _persistStoreId: function () {
+            try {
+                window.localStorage.setItem(this._storeStorageKey, String(this.getEffectiveStoreId()));
+            } catch (e) {
+                // Local storage unavailable (private mode / disabled) — ignore.
+            }
+        },
+
+        /**
+         * Check whether a store ID exists in the available store list.
+         *
+         * @param {number} storeId
+         * @return {boolean}
+         */
+        _storeExists: function (storeId) {
+            return (this.stores || []).some(function (store) {
+                return parseInt(store.id, 10) === storeId;
+            });
+        },
+
+        /**
          * Perform an AJAX request with form_key and store_id injected.
          *
          * @param {string} url
@@ -658,11 +820,15 @@ define([
 
         /**
          * Load the list of available sample data providers from the server
-         * and populate the providers observable.
+         * and populate the providers observable, then resolve which provider is
+         * selected for this template.
          *
          * @param {string} [templateIdentifier]
+         * @param {string} [preferredProvider] - Provider to restore (the override's saved
+         *        provider); falls back to the primary provider when absent or unavailable.
+         * @return {jQuery.Deferred}
          */
-        loadSampleDataProviders: function (templateIdentifier) {
+        loadSampleDataProviders: function (templateIdentifier, preferredProvider) {
             var self = this,
                 data = {};
 
@@ -670,7 +836,7 @@ define([
                 data.template_identifier = templateIdentifier;
             }
 
-            this._ajax(this.urls.sampleDataLoadList, data).done(function (res) {
+            return this._ajax(this.urls.sampleDataLoadList, data).done(function (res) {
                 var items = [];
 
                 if (res.success && res.providers) {
@@ -692,11 +858,44 @@ define([
                 self._providerEntitySelectionMap['custom'] = false;
 
                 self.providers(items);
-
-                if (items.length > 0 && !self.selectedProvider()) {
-                    self.selectedProvider(items[0].code);
-                }
+                self._applyProviderSelection(items, preferredProvider);
             });
+        },
+
+        /**
+         * Pick the active sample-data provider for the freshly loaded provider list:
+         * the override's saved provider when it is still offered, otherwise the primary
+         * (first) provider. The change is made without triggering a preview render — the
+         * caller renders once afterwards with the final provider — while keeping the
+         * dependent provider UI (custom-data / entity-search visibility) in sync.
+         *
+         * @param {Array<{code: string, label: string}>} items
+         * @param {string} [preferredProvider]
+         */
+        _applyProviderSelection: function (items, preferredProvider) {
+            var codes = items.map(function (item) {
+                    return item.code;
+                }),
+                target = '',
+                prevSuppress;
+
+            if (preferredProvider && codes.indexOf(preferredProvider) !== -1) {
+                target = preferredProvider;
+            } else if (items.length > 0) {
+                target = items[0].code;
+            }
+
+            if (this.selectedProvider() === target) {
+                // Value unchanged, so the subscribe will not fire — sync the UI directly.
+                this._updateProviderUI();
+
+                return;
+            }
+
+            prevSuppress = this._suppressChangeEvents;
+            this._suppressChangeEvents = true;
+            this.selectedProvider(target);
+            this._suppressChangeEvents = prevSuppress;
         },
 
         /**
@@ -808,15 +1007,19 @@ define([
 
                 if (res.success && res.template) {
                     var isDefault = self.viewingDefault();
+                    // Restore the data source this override was saved with (empty in the
+                    // read-only default view, where the primary provider always applies).
+                    var savedProvider = isDefault ? '' : (res.template.sample_provider_code || '');
+                    var savedCustomVars = isDefault ? '' : (res.template.custom_variables || '');
 
                     self._suppressChangeEvents = true;
 
+                    var loadedContent = isDefault
+                        ? (res.template.default_content || '')
+                        : (res.template.content || '');
+
                     if (self.templateEditor) {
-                        self.templateEditor.setValue(
-                            isDefault
-                                ? (res.template.default_content || '')
-                                : (res.template.content || '')
-                        );
+                        self.templateEditor.setValue(loadedContent);
                     }
 
                     self.subject(
@@ -829,9 +1032,32 @@ define([
                         self.customCssEditor.setValue(isDefault ? '' : (res.template.custom_css || ''));
                     }
 
+                    if (self.customDataEditor) {
+                        if (savedProvider === 'custom' && savedCustomVars !== '') {
+                            // This override was saved with the custom provider: restore the
+                            // exact sample-data JSON it was saved/published with.
+                            self.customDataEditor.setValue(savedCustomVars);
+                        } else {
+                            // Preserve entered sample values only when staying on the same
+                            // template; a different template is rebuilt from its own variables.
+                            var previousCustomData = self._customDataIdentifier === identifier
+                                ? self.customDataEditor.getValue()
+                                : '';
+
+                            self.customDataEditor.setValue(
+                                self._buildCustomDataJson(loadedContent, previousCustomData)
+                            );
+                        }
+
+                        self._customDataIdentifier = identifier;
+                    }
+
                     self.currentTemplateStatus(res.template.status || '');
                     self.hasDraft(res.template.has_draft || false);
                     self.hasPublished(res.template.has_published || false);
+                    // Remember the working draft so "Back to draft" can return to it even
+                    // while the published (live) version is being viewed.
+                    self._workingDraftEntityId = self._pickWorkingDraftId(res.template.drafts);
                     self._publishedEntityId = res.template.published
                         ? res.template.published.entity_id
                         : null;
@@ -841,6 +1067,11 @@ define([
                             : true
                     );
                     self._currentEntityId = isDefault ? null : (res.template.entity_id || null);
+                    // Store of the override actually shown (may be 0/default via fallback);
+                    // version history is scoped to this, not the selected store view.
+                    self._currentOverrideStoreId = res.template.store_id !== undefined
+                        ? parseInt(res.template.store_id, 10)
+                        : self.getEffectiveStoreId();
 
                     if (!isDefault && res.template.tailwind_css) {
                         self._lastTailwindCss = res.template.tailwind_css;
@@ -877,8 +1108,13 @@ define([
                             ? 'Default template: ' + identifier
                             : 'Template loaded: ' + identifier
                     );
-                    self.renderPreview();
-                    self.loadSampleDataProviders(identifier);
+
+                    // Resolve this template/override's provider (saved or primary) before
+                    // rendering, so the preview is produced once with the correct data
+                    // source instead of briefly showing the previously selected one.
+                    self.loadSampleDataProviders(identifier, savedProvider).always(function () {
+                        self.renderPreview();
+                    });
                 } else {
                     self.setStatus('error', 'ERROR');
                     self.statusBarText('Failed to load template');
@@ -895,24 +1131,46 @@ define([
          */
         renderPreview: function () {
             var self = this,
-                content = this.templateEditor ? this.templateEditor.getValue() : '';
+                content = this.templateEditor ? this.templateEditor.getValue() : '',
+                token;
 
             if (!content) {
                 return;
             }
 
+            // Tag this render so the eventual preview response can be matched against the
+            // latest selection. Fast-switching templates starts a new render each time;
+            // only the newest one may touch the preview.
+            token = ++this._previewToken;
+
             if (this.previewPanel) {
                 this.previewPanel.showLoading();
             }
 
-            this._sendPreviewRequest(content);
+            if (this.themeEditor) {
+                tailwindCompiler.setTheme(this.themeEditor.getThemeCss());
+            }
 
+            // Single-fire: wait for the Tailwind compile before sending the preview AJAX.
+            // The old "render twice" path - immediate render with stale `_lastTailwindCss`
+            // followed by a second render once the fresh CSS arrived - flickered the
+            // preview iframe through an unstyled intermediate state whenever the user
+            // typed a class the previous compile didn't know about (e.g. swapping
+            // `bg-white` for `bg-black`). Waiting for the compiler removes that flicker;
+            // the compile fast-paths when neither content nor theme changed, so the
+            // common "edit text, classes unchanged" case still feels instant.
             tailwindCompiler.compile(content).done(function (twCss) {
-                if (twCss && twCss !== self._lastTailwindCss) {
-                    self._lastTailwindCss = twCss;
-                    self.tailwindCssOutput(twCss);
-                    self._sendPreviewRequest(content);
+                if (token !== self._previewToken) {
+                    return;
                 }
+
+                var twString = twCss || '';
+                if (twString !== self._lastTailwindCss) {
+                    self._lastTailwindCss = twString;
+                    self.tailwindCssOutput(twString);
+                }
+
+                self._sendPreviewRequest(content, token);
             });
         },
 
@@ -920,16 +1178,18 @@ define([
          * Send the preview AJAX request to the server.
          *
          * @param {string} content
+         * @param {number} [token] - The renderPreview generation that issued this request;
+         *                           responses from a superseded generation are discarded.
          * @private
          */
-        _sendPreviewRequest: function (content) {
+        _sendPreviewRequest: function (content, token) {
             var self = this,
                 providerCode = this.selectedProvider() || 'mock',
                 data;
 
             data = {
                 template_content: content,
-                theme_json: this.themeEditor ? this.themeEditor.getThemeJson() : '',
+                theme_css: this.themeEditor ? this.themeEditor.getThemeCss() : '',
                 custom_css: this.customCssEditor ? this.customCssEditor.getValue() : '',
                 tailwind_css: this._lastTailwindCss || '',
                 provider_code: providerCode,
@@ -938,10 +1198,17 @@ define([
             };
 
             if (providerCode === 'custom') {
-                data.custom_variables = this.customDataJson() || '';
+                data.custom_variables = this.customDataEditor ? this.customDataEditor.getValue() : '';
             }
 
             this._ajax(this.urls.preview, data, 'POST').done(function (res) {
+                // Drop a response the user has already moved past: a slower or
+                // out-of-order preview must not replace the current selection's
+                // preview (also silences the abort-triggered fail handler below).
+                if (token !== undefined && token !== self._previewToken) {
+                    return;
+                }
+
                 if (!self.previewPanel) {
                     return;
                 }
@@ -956,7 +1223,19 @@ define([
                         (res.message || 'Unknown error') + '</div>'
                     );
                 }
-            }).fail(function () {
+            }).fail(function (xhr, textStatus) {
+                // A request we aborted ourselves (switching template fires
+                // _abortPendingRequests) is not a real failure — leave the loading
+                // overlay up for the render that replaces it instead of flashing an
+                // error. Also drop responses already superseded by a newer render.
+                if (textStatus === 'abort') {
+                    return;
+                }
+
+                if (token !== undefined && token !== self._previewToken) {
+                    return;
+                }
+
                 if (self.previewPanel) {
                     self.previewPanel.hideLoading();
                     self.previewPanel.setContent(
@@ -985,7 +1264,10 @@ define([
          * Handle content changes from template editor, CSS editor, or subject field.
          */
         onContentChange: function () {
-            if (this._suppressChangeEvents) {
+            // Ignore changes while loading content or while a read-only version
+            // (e.g. the published view) is shown — nothing here may mark the draft
+            // dirty or schedule an autosave that would overwrite it.
+            if (this._suppressChangeEvents || this.isReadOnly()) {
                 return;
             }
 
@@ -999,69 +1281,268 @@ define([
         },
 
         /**
+         * Propagate the current read-only state to the editors so a read-only
+         * version (e.g. the published view) cannot be edited.
+         */
+        applyReadOnlyState: function () {
+            var readOnly = this.isReadOnly();
+
+            if (this.templateEditor && typeof this.templateEditor.setReadOnly === 'function') {
+                this.templateEditor.setReadOnly(readOnly);
+            }
+
+            if (this.customCssEditor && typeof this.customCssEditor.setReadOnly === 'function') {
+                this.customCssEditor.setReadOnly(readOnly);
+            }
+        },
+
+        /**
+         * Handle changes to the custom data JSON editor.
+         *
+         * Custom data is preview-only sample data, so editing it re-renders the
+         * preview but does not mark the template as modified.
+         */
+        onCustomDataChange: function () {
+            if (this._suppressChangeEvents) {
+                return;
+            }
+
+            this.schedulePreview();
+        },
+
+        /**
+         * Parse the Magento directives in the given content, collect every
+         * referenced variable path and build a pretty-printed JSON skeleton.
+         *
+         * Each "{{...}}" directive is inspected for both the leading variable of
+         * "var"/"if"/"depend" directives and any "$object.property" references
+         * (e.g. trans parameters such as {{trans "Hi %name" name=$customer.name}}).
+         * Variables are resolved as nested objects (e.g. "order.increment_id"
+         * becomes {"order": {"increment_id": ""}}). Sample values already entered
+         * for variables that are still referenced are preserved.
+         *
+         * @param {string} content
+         * @param {string} existingJson
+         * @return {string}
+         */
+        _buildCustomDataJson: function (content, existingJson) {
+            var self = this,
+                data = {},
+                existing = {},
+                directiveRegex = /\{\{(.*?)\}\}/g,
+                leadRegex = /^\s*(?:var|if|elseif|depend)\s+([a-zA-Z_][a-zA-Z0-9_.]*)/,
+                directive,
+                lead;
+
+            try {
+                existing = existingJson ? JSON.parse(existingJson) : {};
+            } catch (e) {
+                existing = {};
+            }
+
+            while ((directive = directiveRegex.exec(content || '')) !== null) {
+                var body = directive[1],
+                    dollarRegex = /\$([a-zA-Z_][a-zA-Z0-9_.]*)/g,
+                    dollar;
+
+                lead = body.match(leadRegex);
+
+                if (lead && self._isPlainVariablePath(lead[1])) {
+                    self._assignVariablePath(data, lead[1].split('.'));
+                }
+
+                while ((dollar = dollarRegex.exec(body)) !== null) {
+                    if (body.charAt(dollar.index + dollar[0].length) === '(') {
+                        continue;
+                    }
+
+                    if (self._isPlainVariablePath(dollar[1])) {
+                        self._assignVariablePath(data, dollar[1].split('.'));
+                    }
+                }
+            }
+
+            if (Object.keys(data).length === 0) {
+                return existingJson || '';
+            }
+
+            this._mergeExistingValues(data, existing);
+
+            return JSON.stringify(data, null, 2);
+        },
+
+        /**
+         * Determine whether a token is a plain data variable path that can be
+         * represented in JSON, excluding method calls and helper objects.
+         *
+         * @param {string} path
+         * @return {boolean}
+         */
+        _isPlainVariablePath: function (path) {
+            if (!path || path.indexOf('(') !== -1 || path.indexOf(' ') !== -1) {
+                return false;
+            }
+
+            if (path.split('.')[0] === 'this') {
+                return false;
+            }
+
+            return /^[a-zA-Z_][a-zA-Z0-9_.]*$/.test(path);
+        },
+
+        /**
+         * Assign an empty placeholder for a dotted variable path, creating nested
+         * objects for intermediate segments without overwriting existing branches.
+         *
+         * @param {Object} target
+         * @param {Array<string>} parts
+         */
+        _assignVariablePath: function (target, parts) {
+            var current = target,
+                i,
+                key;
+
+            for (i = 0; i < parts.length; i++) {
+                key = parts[i];
+
+                if (!key) {
+                    return;
+                }
+
+                if (i === parts.length - 1) {
+                    if (current[key] === undefined) {
+                        current[key] = '';
+                    }
+                } else {
+                    if (typeof current[key] !== 'object' || current[key] === null) {
+                        current[key] = {};
+                    }
+
+                    current = current[key];
+                }
+            }
+        },
+
+        /**
+         * Copy previously entered sample values onto the freshly extracted skeleton
+         * for any variable path that is still referenced by the template.
+         *
+         * @param {Object} target
+         * @param {Object} existing
+         */
+        _mergeExistingValues: function (target, existing) {
+            var self = this;
+
+            if (!target || typeof target !== 'object' || !existing || typeof existing !== 'object') {
+                return;
+            }
+
+            Object.keys(target).forEach(function (key) {
+                if (existing[key] === undefined) {
+                    return;
+                }
+
+                if (target[key] && typeof target[key] === 'object') {
+                    if (existing[key] && typeof existing[key] === 'object') {
+                        self._mergeExistingValues(target[key], existing[key]);
+                    }
+                } else if (typeof existing[key] !== 'object') {
+                    target[key] = existing[key];
+                }
+            });
+        },
+
+        /**
          * Collect the current state of all editors into a single data object for saving.
          *
          * @return {Object}
          */
         getSaveData: function () {
             var dates = this.schedulePanel
-                ? this.schedulePanel.getDates()
-                : {active_from: '', active_to: ''};
+                    ? this.schedulePanel.getDates()
+                    : {active_from: '', active_to: ''},
+                providerCode = this.selectedProvider() || '',
+                data = {
+                    template_identifier: this.currentTemplateId(),
+                    template_content: this.templateEditor
+                        ? this.templateEditor.getValue()
+                        : '',
+                    template_subject: this.subject(),
+                    custom_css: this.customCssEditor
+                        ? this.customCssEditor.getValue()
+                        : '',
+                    tailwind_css: this._lastTailwindCss || '',
+                    theme_id: this.themeEditor
+                        ? this.themeEditor.getCurrentThemeId()
+                        : '',
+                    active_from: dates.active_from,
+                    active_to: dates.active_to,
+                    entity_id: this._currentEntityId || '',
+                    provider_code: providerCode
+                };
 
-            return {
-                template_identifier: this.currentTemplateId(),
-                template_content: this.templateEditor
-                    ? this.templateEditor.getValue()
-                    : '',
-                template_subject: this.subject(),
-                custom_css: this.customCssEditor
-                    ? this.customCssEditor.getValue()
-                    : '',
-                tailwind_css: this._lastTailwindCss || '',
-                theme_id: this.themeEditor
-                    ? this.themeEditor.getCurrentThemeId()
-                    : '',
-                active_from: dates.active_from,
-                active_to: dates.active_to,
-                entity_id: this._currentEntityId || ''
-            };
+            // Persist the custom sample-data JSON only for the custom provider, mirroring
+            // how the server stores it (cleared for any other provider).
+            if (providerCode === 'custom') {
+                data.custom_variables = this.customDataEditor ? this.customDataEditor.getValue() : '';
+            }
+
+            return data;
         },
 
         /**
          * Save the current editor state as a draft.
          *
+         * Edits are always written to a draft, never to the live published override.
+         * When a published template is being edited, the save forks the changes into a
+         * working draft and leaves the published version untouched, so nothing reaches
+         * customers until an explicit publish. The editor then switches to that draft.
+         *
          * @param {boolean} [asNew] - When true, save as a new draft instead of updating the current one.
          */
         saveDraft: function (asNew) {
             var self = this,
-                data;
+                data,
+                forkFromPublished;
 
-            if (!this.currentTemplateId() || this.viewingDefault()) {
+            // Read-only means the published (live) version is being viewed while a
+            // separate working draft exists. Saving here must not touch that draft, so
+            // skip entirely — the user returns to the draft to make changes.
+            if (!this.currentTemplateId() || this.viewingDefault() || this.isReadOnly()) {
                 return;
             }
 
-            var isPublished = this.currentTemplateStatus() === 'published';
+            // A "published" status means the loaded override is the live one. Saving must
+            // not overwrite it in place, so fork the edits into a separate draft instead.
+            forkFromPublished = this.currentTemplateStatus() === 'published';
 
-            this.setStatus('saving', isPublished ? 'SAVING' : 'SAVING DRAFT');
+            this.setStatus('saving', 'SAVING DRAFT');
 
             data = this.getSaveData();
-            data.status = isPublished ? 'published' : 'draft';
+            data.status = 'draft';
 
-            if (asNew) {
+            // Drop the published override id (or force a brand-new draft) so the server
+            // writes to the working draft rather than the live published row.
+            if (asNew || forkFromPublished) {
                 delete data.entity_id;
             }
 
             this._ajax(this.urls.saveDraft, data, 'POST').done(function (res) {
                 if (res.success) {
-                    if (!isPublished) {
-                        self.currentTemplateStatus('draft');
-                        self.hasDraft(true);
-                    }
+                    self.currentTemplateStatus('draft');
+                    self.hasDraft(true);
                     self._currentEntityId = res.entity_id || self._currentEntityId;
                     self.updateBadges();
-                    self.setStatus('ready', isPublished ? 'SAVED' : 'DRAFT SAVED');
+                    self.setStatus('ready', 'DRAFT SAVED');
 
-                    if (!isPublished && self.templateSidebar) {
+                    if (self.templateSidebar) {
+                        // Point the tree at the freshly forked draft before refreshing so
+                        // the sidebar selection stays in sync with what the editor shows.
+                        if (forkFromPublished && res.entity_id) {
+                            self.templateSidebar.activeOverrideId(res.entity_id);
+                            self.templateSidebar.expandTemplate(self.currentTemplateId());
+                        }
+
                         self.templateSidebar.markDraft(self.currentTemplateId(), true);
                     }
 
@@ -1074,7 +1555,7 @@ define([
                         self.draftListPanel.setDrafts(res.drafts);
                     }
 
-                    self.statusBarText(isPublished ? 'Saved' : 'Draft saved');
+                    self.statusBarText('Draft saved');
 
                     setTimeout(function () {
                         self.setStatus('ready');
@@ -1130,6 +1611,11 @@ define([
 
                 self._ajax(self.urls.saveDraft, data, 'POST').done(function (saveRes) {
                     if (saveRes.success) {
+                        // The new draft is a real editable override, not the read-only
+                        // default that was on screen, so leave default-view mode; otherwise
+                        // the toolbar keeps hiding the draft actions (Publish/Discard) until
+                        // the draft is manually re-selected in the sidebar.
+                        self.viewingDefault(false);
                         self.currentTemplateStatus('draft');
                         self.hasDraft(true);
                         self._currentEntityId = saveRes.entity_id;
@@ -1623,6 +2109,10 @@ define([
                 entity_id: this.selectedEntityId ? this.selectedEntityId() : ''
             };
 
+            if ((this.selectedProvider() || 'mock') === 'custom') {
+                data.custom_variables = this.customDataEditor ? this.customDataEditor.getValue() : '';
+            }
+
             this._ajax(this.urls.sendTestEmail, data, 'POST').done(function (res) {
                 self.sendTestEmailSending(false);
 
@@ -1671,6 +2161,66 @@ define([
          */
         _getPublishedEntityId: function () {
             return this._publishedEntityId || null;
+        },
+
+        /**
+         * Load and display the published (live) version of the current template
+         * so the user can compare it against the draft they are editing.
+         */
+        viewPublishedVersion: function () {
+            var publishedEntityId = this._getPublishedEntityId();
+
+            if (!this.currentTemplateId() || !publishedEntityId) {
+                return;
+            }
+
+            this.viewingDefault(false);
+            this.loadTemplate(this.currentTemplateId(), publishedEntityId);
+        },
+
+        /**
+         * Switch from the published (live) version back to editing the working draft.
+         */
+        editWorkingDraft: function () {
+            if (!this.currentTemplateId()) {
+                return;
+            }
+
+            this.viewingDefault(false);
+            // Use the known working-draft id when available; otherwise pass no entity id
+            // so the server resolves the existing draft for this template/store. The
+            // notice only shows while a draft exists, so a draft is always found.
+            this.loadTemplate(this.currentTemplateId(), this._workingDraftEntityId || null);
+        },
+
+        /**
+         * Pick the working draft entity id from the loaded draft override data — the most
+         * recent one (highest entity id), matching how the sidebar pairs a draft with its
+         * published version.
+         *
+         * The server serializes drafts as an entity-id-keyed object (collection items are
+         * keyed by id), not a sequential array, so this iterates keys rather than relying
+         * on Array length/indexing.
+         *
+         * @param {Object|Array<Object>} drafts
+         * @return {number|null}
+         */
+        _pickWorkingDraftId: function (drafts) {
+            var id = null;
+
+            if (!drafts || typeof drafts !== 'object') {
+                return null;
+            }
+
+            Object.keys(drafts).forEach(function (key) {
+                var candidate = parseInt(drafts[key] && drafts[key].entity_id, 10);
+
+                if (!isNaN(candidate) && (id === null || candidate > id)) {
+                    id = candidate;
+                }
+            });
+
+            return id;
         },
 
         openPublishDialog: function () {
@@ -1828,7 +2378,9 @@ define([
             if (this.currentTemplateId() && this.versionHistory) {
                 this.versionHistory.show(
                     this.currentTemplateId(),
-                    this.getEffectiveStoreId()
+                    this._currentOverrideStoreId !== null
+                        ? this._currentOverrideStoreId
+                        : this.getEffectiveStoreId()
                 );
             }
         },
@@ -1878,7 +2430,7 @@ define([
 
             fields = {
                 template_content: content,
-                theme_json: this.themeEditor ? this.themeEditor.getThemeJson() : '',
+                theme_css: this.themeEditor ? this.themeEditor.getThemeCss() : '',
                 custom_css: this.customCssEditor ? this.customCssEditor.getValue() : '',
                 template_identifier: this.currentTemplateId(),
                 form_key: this.formKey,

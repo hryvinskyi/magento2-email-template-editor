@@ -53,12 +53,12 @@ class Export extends Action implements HttpGetActionInterface
 
         try {
             $theme = $this->themeRepository->getById($themeId);
-            $fileName = preg_replace('/[^a-z0-9_\-]/i', '_', (string)$theme->getName()) . '_theme.json';
-            $content = (string)$theme->getThemeJson();
+            $fileName = preg_replace('/[^a-z0-9_\-]/i', '_', (string)$theme->getName()) . '_theme.css';
+            $content = (string)$theme->getThemeCss();
 
             $resultRaw = $this->resultRawFactory->create();
             $resultRaw->setHttpResponseCode(200);
-            $resultRaw->setHeader('Content-Type', 'application/json', true);
+            $resultRaw->setHeader('Content-Type', 'text/css', true);
             $resultRaw->setHeader('Content-Disposition', 'attachment; filename="' . $fileName . '"', true);
             $resultRaw->setContents($content);
 

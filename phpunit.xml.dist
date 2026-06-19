@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+/**
+ * Copyright (c) 2026. Volodymyr Hryvinskyi. All rights reserved.
+ * Author: Volodymyr Hryvinskyi <volodymyr@hryvinskyi.com>
+ * GitHub: https://github.com/hryvinskyi
+ */
+-->
+<phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:noNamespaceSchemaLocation="https://schema.phpunit.de/9.5/phpunit.xsd"
+         colors="true"
+         bootstrap="Test/Unit/bootstrap.php"
+         beStrictAboutOutputDuringTests="true">
+    <testsuites>
+        <testsuite name="Hryvinskyi_EmailTemplateEditor_Unit">
+            <directory>Test/Unit</directory>
+        </testsuite>
+    </testsuites>
+    <coverage>
+        <include>
+            <directory suffix=".php">Model</directory>
+            <directory suffix=".php">Api</directory>
+        </include>
+    </coverage>
+</phpunit>

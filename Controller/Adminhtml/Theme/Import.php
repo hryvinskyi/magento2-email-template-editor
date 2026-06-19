@@ -67,32 +67,33 @@ class Import extends Action implements HttpPostActionInterface
                 ]);
             }
 
-            $importData = json_decode($content, true);
+            $themeCss = (string)$content;
 
-            if (json_last_error() !== JSON_ERROR_NONE) {
-                return $resultJson->setData([
-                    'success' => false,
-                    'message' => (string)__('Invalid JSON file: %1', json_last_error_msg()),
-                ]);
-            }
-
-            $themeJson = is_string($content) ? $content : '';
-
-            if (!$this->themeJsonValidator->validate($themeJson)) {
+            if (!$this->themeJsonValidator->validate($themeCss)) {
                 $errors = $this->themeJsonValidator->getErrors();
 
                 return $resultJson->setData([
                     'success' => false,
-                    'message' => (string)__('Invalid theme structure: %1', implode(', ', $errors)),
+                    'message' => (string)__('Invalid theme content: %1', implode(', ', $errors)),
                 ]);
             }
 
-            $themeName = $importData['name'] ?? 'Imported Theme';
+            // For legacy JSON imports the file may contain a "name" key; otherwise fall back to
+            // the uploaded file name (without extension) so the theme is identifiable.
+            $themeName = 'Imported Theme';
+            if (str_starts_with(ltrim($themeCss), '{')) {
+                $importData = json_decode($themeCss, true);
+                if (is_array($importData) && !empty($importData['name'])) {
+                    $themeName = (string)$importData['name'];
+                }
+            } elseif (!empty($files['name'])) {
+                $themeName = pathinfo((string)$files['name'], PATHINFO_FILENAME);
+            }
             $storeId = (int)$this->getRequest()->getParam('store_id', 0);
 
             $theme = $this->themeFactory->create();
-            $theme->setName((string)$themeName);
-            $theme->setThemeJson($themeJson);
+            $theme->setName($themeName);
+            $theme->setThemeCss($themeCss);
             $theme->setStoreId($storeId);
             $this->themeRepository->save($theme);
 

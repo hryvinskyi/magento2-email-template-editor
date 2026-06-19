@@ -4,6 +4,7 @@
             "theme_id": true,
             "name": true,
             "theme_json": true,
+            "theme_css": true,
             "is_default": true,
             "store_id": true,
             "created_at": true,
@@ -40,7 +41,9 @@
             "draft_name": true,
             "active_from": true,
             "active_to": true,
-            "is_active": true
+            "is_active": true,
+            "sample_provider_code": true,
+            "custom_variables": true
         },
         "index": {
             "HRYVINSKYI_EMAIL_TPL_OVERRIDE_TEMPLATE_IDENT_STORE_STATUS": true,

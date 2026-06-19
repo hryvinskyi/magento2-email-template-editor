@@ -40,7 +40,12 @@ class CssVariableResolver implements CssVariableResolverInterface
         // Match --name: value; (semicolon-terminated, bounded by ; or {})
         if (preg_match_all('/(--[\w-]+)\s*:\s*([^;{}]+);/', $css, $matches, PREG_SET_ORDER)) {
             foreach ($matches as $match) {
-                $value = trim($match[2]);
+                // A custom property's value never carries the !important flag into a var()
+                // substitution - per spec the flag applies to the declaration that sets the
+                // property, not to its substituted value. Strip it so substitutions stay valid
+                // (e.g. "--tw-bg-opacity: 1 !important" must yield "1", not "1 !important",
+                // otherwise it corrupts values like "rgb(255 255 255 / var(--tw-bg-opacity))").
+                $value = trim((string)preg_replace('/\s*!important\s*$/i', '', trim($match[2])));
                 if ($value !== '') {
                     $variables[trim($match[1])] = $value;
                 }
@@ -67,7 +72,9 @@ class CssVariableResolver implements CssVariableResolverInterface
 
         while (str_contains($css, 'var(') && $iteration < $maxIterations) {
             $css = (string) preg_replace_callback(
-                '/var\(\s*(--[\w-]+)\s*(?:,\s*([^)]+))?\s*\)/',
+                // Allow empty fallback (`var(--x,)`) - Tailwind v4 emits this form for
+                // `filter`/`transform` composition slots that default to "no contribution".
+                '/var\(\s*(--[\w-]+)\s*(?:,\s*([^)]*))?\s*\)/',
                 static function (array $matches) use ($variables): string {
                     $varName = trim($matches[1]);
                     $fallback = isset($matches[2]) ? trim($matches[2]) : null;

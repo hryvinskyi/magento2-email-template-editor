@@ -10,6 +10,7 @@ declare(strict_types=1);
 namespace Hryvinskyi\EmailTemplateEditor\Model;
 
 use Hryvinskyi\EmailTemplateEditor\Api\CssInlinerInterface;
+use Hryvinskyi\EmailTemplateEditor\Api\EditorContextFlagInterface;
 use Hryvinskyi\EmailTemplateEditor\Api\TemplateAreaResolverInterface;
 use Hryvinskyi\EmailTemplateEditor\Api\TemplateRendererInterface;
 use Hryvinskyi\EmailTemplateEditor\Api\ThemeRepositoryInterface;
@@ -42,7 +43,8 @@ class TemplateRenderer implements TemplateRendererInterface
         private readonly Emulation $appEmulation,
         private readonly TemplateFactory $templateFactory,
         private readonly StoreManagerInterface $storeManager,
-        private readonly LoggerInterface $logger
+        private readonly LoggerInterface $logger,
+        private readonly EditorContextFlagInterface $editorContextFlag
     ) {
     }
 
@@ -56,9 +58,16 @@ class TemplateRenderer implements TemplateRendererInterface
         ?string $customCss = null,
         ?string $tailwindCss = null,
         ?string $templateIdentifier = null,
-        bool $isMockData = false
+        bool $isMockData = false,
+        ?string $themeCssOverride = null
     ): string {
         $emulationStarted = false;
+
+        // Mark this render as happening inside the editor preview so the EmailTemplatePlugin
+        // applies overrides on included templates (header/footer) even when the module's
+        // "enabled" config is off - the toggle gates live transactional emails, not the
+        // editor's own preview. Without this, included headers render as the base default.
+        $this->editorContextFlag->enable();
 
         try {
             $area = $templateIdentifier !== null
@@ -80,7 +89,11 @@ class TemplateRenderer implements TemplateRendererInterface
             $template->setTemplateType(\Magento\Email\Model\Template::TYPE_HTML);
             $template->setTemplateText($content);
 
-            $themeCss = $this->resolveThemeCss($storeId);
+            // When the editor sends the currently-loaded theme CSS, use it as the token
+            // source. Otherwise fall back to the store's default theme.
+            $themeCss = $themeCssOverride !== null && trim($themeCssOverride) !== ''
+                ? $this->utilityCssGenerator->generate($themeCssOverride)
+                : $this->resolveThemeCss($storeId);
             if ($themeCss !== null && trim($themeCss) !== '') {
                 $template->setTemplateStyles($themeCss);
             }
@@ -114,6 +127,8 @@ class TemplateRenderer implements TemplateRendererInterface
             if ($emulationStarted) {
                 $this->appEmulation->stopEnvironmentEmulation();
             }
+
+            $this->editorContextFlag->disable();
         }
     }
 
@@ -178,8 +193,8 @@ class TemplateRenderer implements TemplateRendererInterface
     {
         try {
             $theme = $this->themeRepository->getDefaultTheme($storeId);
-            if ($theme !== null && $theme->getThemeJson() !== null) {
-                return $this->utilityCssGenerator->generate($theme->getThemeJson());
+            if ($theme !== null && $theme->getThemeCss() !== null) {
+                return $this->utilityCssGenerator->generate($theme->getThemeCss());
             }
         } catch (\Exception $e) {
             $this->logger->warning('Failed to resolve theme CSS: ' . $e->getMessage());

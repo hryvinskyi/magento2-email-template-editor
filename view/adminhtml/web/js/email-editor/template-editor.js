@@ -16,7 +16,24 @@ define([
         defaults: {
             template: 'Hryvinskyi_EmailTemplateEditor/email-editor/template-editor',
             editor: null,
-            _lineWrapping: false
+            _lineWrapping: false,
+            _readOnly: false
+        },
+
+        /**
+         * Initialize the component and create its observables.
+         *
+         * @return {Object}
+         */
+        initialize: function () {
+            this._super();
+
+            // Reactive read-only flag so the toolbar can disable the
+            // content-mutating actions (Format, Insert Variable) when a
+            // read-only version is being viewed.
+            this.isReadOnly = ko.observable(false);
+
+            return this;
         },
 
         /**
@@ -46,13 +63,39 @@ define([
                     foldGutter: true,
                     matchBrackets: true,
                     lineWrapping: self._lineWrapping,
+                    readOnly: self._readOnly,
                     gutters: ['CodeMirror-linenumbers', 'CodeMirror-foldgutter']
                 });
 
                 self.editor.on('change', function () {
                     self.onContentChange();
                 });
+
+                // Re-apply any read-only state requested before CodeMirror finished loading.
+                self.setReadOnly(self._readOnly);
             });
+        },
+
+        /**
+         * Toggle read-only mode. Blocks user edits in CodeMirror and the
+         * content-mutating toolbar actions so a read-only version (e.g. the
+         * published view) cannot be changed.
+         *
+         * @param {boolean} flag
+         */
+        setReadOnly: function (flag) {
+            this._readOnly = !!flag;
+            this.isReadOnly(this._readOnly);
+
+            if (this.editor) {
+                this.editor.setOption('readOnly', this._readOnly);
+
+                var wrapper = this.editor.getWrapperElement();
+
+                if (wrapper) {
+                    wrapper.classList.toggle('ete-codemirror-readonly', this._readOnly);
+                }
+            }
         },
 
         /**
@@ -88,7 +131,7 @@ define([
          * Format the current HTML content with basic line-break formatting.
          */
         formatCode: function () {
-            if (!this.editor) {
+            if (!this.editor || this._readOnly) {
                 return;
             }
 
@@ -164,7 +207,7 @@ define([
          * @param {string} text
          */
         insertAtCursor: function (text) {
-            if (!this.editor) {
+            if (!this.editor || this._readOnly) {
                 return;
             }
 

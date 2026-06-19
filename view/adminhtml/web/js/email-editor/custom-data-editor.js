@@ -13,7 +13,7 @@ define([
 
     return Component.extend({
         defaults: {
-            template: 'Hryvinskyi_EmailTemplateEditor/email-editor/custom-css-editor',
+            template: 'Hryvinskyi_EmailTemplateEditor/email-editor/custom-data-editor',
             editor: null
         },
 
@@ -22,9 +22,6 @@ define([
 
         /** @type {string|null} */
         _pendingValue: null,
-
-        /** @type {boolean} */
-        _readOnly: false,
 
         /**
          * Store the DOM element for deferred CodeMirror initialization.
@@ -38,7 +35,7 @@ define([
         },
 
         /**
-         * Create the CodeMirror editor if the container is visible and not yet initialized.
+         * Create the JSON CodeMirror editor if the container is visible and not yet initialized.
          */
         _tryCreateEditor: function () {
             var self = this,
@@ -50,7 +47,7 @@ define([
 
             require([
                 'Hryvinskyi_ConfigurationFields/js/codemirror/lib/codemirror',
-                'Hryvinskyi_ConfigurationFields/js/codemirror/mode/css/css',
+                'Hryvinskyi_ConfigurationFields/js/codemirror/mode/javascript/javascript',
                 'Hryvinskyi_ConfigurationFields/js/codemirror/addon/fold/foldcode',
                 'Hryvinskyi_ConfigurationFields/js/codemirror/addon/fold/foldgutter',
                 'Hryvinskyi_ConfigurationFields/js/codemirror/addon/fold/brace-fold',
@@ -61,13 +58,12 @@ define([
                 }
 
                 self.editor = CodeMirror(el, {
-                    mode: 'css',
+                    mode: {name: 'javascript', json: true},
                     theme: 'default',
                     lineNumbers: true,
                     foldGutter: true,
                     gutters: ['CodeMirror-linenumbers', 'CodeMirror-foldgutter'],
-                    matchBrackets: true,
-                    readOnly: self._readOnly
+                    matchBrackets: true
                 });
 
                 self.editor.on('change', function () {
@@ -78,34 +74,11 @@ define([
                     self.editor.setValue(self._pendingValue);
                     self._pendingValue = null;
                 }
-
-                // Re-apply any read-only state requested before CodeMirror finished loading.
-                self.setReadOnly(self._readOnly);
             });
         },
 
         /**
-         * Toggle read-only mode so the CSS of a read-only version (e.g. the
-         * published view) cannot be edited.
-         *
-         * @param {boolean} flag
-         */
-        setReadOnly: function (flag) {
-            this._readOnly = !!flag;
-
-            if (this.editor) {
-                this.editor.setOption('readOnly', this._readOnly);
-
-                var wrapper = this.editor.getWrapperElement();
-
-                if (wrapper) {
-                    wrapper.classList.toggle('ete-codemirror-readonly', this._readOnly);
-                }
-            }
-        },
-
-        /**
-         * Return the current editor content.
+         * Return the current editor content (the custom data JSON).
          *
          * @return {string}
          */
@@ -139,14 +112,10 @@ define([
         },
 
         /**
-         * Notify the parent component that the CSS content has changed.
+         * Notify the parent component that the custom (preview-only) data changed.
          */
         onContentChange: function () {
-            var parent = this.source || this.parentComponent;
-
-            if (parent && typeof parent.onContentChange === 'function') {
-                parent.onContentChange();
-            }
+            this.trigger('customDataChange');
         }
     });
 });

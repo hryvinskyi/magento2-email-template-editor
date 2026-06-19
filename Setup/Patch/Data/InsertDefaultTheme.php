@@ -39,7 +39,7 @@ class InsertDefaultTheme implements DataPatchInterface
         $theme = $this->themeFactory->create();
         $theme->setData([
             ThemeInterface::NAME => 'Default',
-            ThemeInterface::THEME_JSON => json_encode($this->getDefaultThemeJson(), JSON_PRETTY_PRINT),
+            ThemeInterface::THEME_CSS => json_encode($this->getDefaultThemeJson(), JSON_PRETTY_PRINT),
             ThemeInterface::IS_DEFAULT => 1,
             ThemeInterface::STORE_ID => 0,
         ]);

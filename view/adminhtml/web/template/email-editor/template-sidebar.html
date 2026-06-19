@@ -2,7 +2,12 @@
 <div class="ete-sidebar-search">
     <div class="ete-sidebar-search-wrapper">
         <svg class="ete-sidebar-search-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-        <input type="text" class="ete-input ete-sidebar-search-input" data-bind="value: searchQuery, valueUpdate: 'afterkeydown', attr: {placeholder: $t('Search by title')}" autocomplete="off"/>
+        <input type="text" class="ete-input ete-sidebar-search-input" data-bind="value: searchQuery, valueUpdate: ['afterkeydown', 'input'], attr: {placeholder: $t('Search by title')}, css: {'ete-has-value': searchQuery}" autocomplete="off"/>
+        <!-- ko if: searchQuery -->
+        <button type="button" class="ete-sidebar-search-clear" data-bind="click: clearSearch, attr: {title: $t('Clear')}">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+        <!-- /ko -->
     </div>
 </div>
 <div class="ete-sidebar-filters">
@@ -22,14 +27,14 @@
 <div class="ete-sidebar-tree" data-bind="foreach: filteredGroups">
     <div class="ete-sidebar-group">
         <div class="ete-sidebar-group-header" data-bind="click: $parent.toggleGroup.bind($parent, $data)">
-            <span class="ete-sidebar-group-icon" data-bind="css: {'ete-expanded': $parent.isGroupExpanded($data.key)}">
+            <span class="ete-sidebar-group-icon" data-bind="css: {'ete-expanded': $parent.isGroupOpen($data.key)}">
                 <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
             </span>
             <svg class="ete-sidebar-folder-icon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
             <span class="ete-sidebar-group-name" data-bind="text: label"></span>
             <span class="ete-sidebar-count" data-bind="text: '(' + templates.length + ')'"></span>
         </div>
-        <div class="ete-sidebar-group-items" data-bind="visible: $parent.isGroupExpanded($data.key), foreach: templates">
+        <div class="ete-sidebar-group-items" data-bind="visible: $parent.isGroupOpen($data.key), foreach: templates">
             <div class="ete-sidebar-tpl" data-bind="css: {'ete-active': id === $parents[1].activeId() && !$parents[1].activeOverrideId(), 'ete-has-overrides': overrides.length > 0}">
                 <div class="ete-sidebar-tpl-header" data-bind="click: function(d, e) { $parents[1].selectTemplate($data);$parents[1].expandTemplate($data.id); }">
                     <!-- ko if: overrides.length > 0 -->
@@ -51,10 +56,15 @@
                 </div>
                 <!-- ko if: overrides.length > 0 -->
                 <div class="ete-sidebar-tpl-children" data-bind="visible: $parents[1].isTemplateExpanded(id), foreach: overrides">
-                    <div class="ete-sidebar-override" data-bind="click: function(d, e) { e.stopPropagation(); $parents[2].selectOverride($data, $parent); }, css: {'ete-override-active': entity_id === $parents[2].activeOverrideId(), 'ete-override-disabled': is_active === false}">
+                    <div class="ete-sidebar-override" data-bind="click: function(d, e) { e.stopPropagation(); $parents[2].selectOverrideEntry($data, $parent); }, css: {'ete-override-active': $parents[2].isOverrideRowActive($data), 'ete-override-disabled': is_active === false}">
                         <span class="ete-sidebar-override-dot" data-bind="css: 'ete-dot-' + status + (is_active === false ? ' ete-dot-disabled' : '')" data-bind-title="status"></span>
                         <div class="ete-sidebar-override-info">
-                            <span class="ete-sidebar-override-label" data-bind="text: label"></span>
+                            <div class="ete-sidebar-override-titlerow">
+                                <span class="ete-sidebar-override-label" data-bind="text: label"></span>
+                                <!-- ko if: $data.pending_draft -->
+                                <span class="ete-sidebar-override-pending" data-bind="attr: {title: $t('Unpublished draft — publish to apply')}, i18n: 'draft pending'"></span>
+                                <!-- /ko -->
+                            </div>
                             <!-- ko if: active_from || active_to -->
                             <span class="ete-sidebar-override-schedule-label">
                                 <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>

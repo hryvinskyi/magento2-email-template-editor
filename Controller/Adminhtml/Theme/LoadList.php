@@ -54,7 +54,7 @@ class LoadList extends Action implements HttpGetActionInterface
                 $themes[] = [
                     'theme_id' => $theme->getThemeId(),
                     'name' => $theme->getName(),
-                    'theme_json' => $theme->getThemeJson(),
+                    'theme_css' => $theme->getThemeCss(),
                     'is_default' => $theme->getIsDefault(),
                     'store_id' => $theme->getStoreId(),
                     'created_at' => $theme->getCreatedAt(),

@@ -122,6 +122,11 @@ class TemplatePublisher implements TemplatePublisherInterface
     /**
      * Validate that the override is in a publishable status
      *
+     * Draft and scheduled overrides are promoted to published. An already published
+     * override may be re-published as well: this re-saves its current content and
+     * creates a new version snapshot, allowing edits made directly on a published
+     * template to be published without first forking a draft.
+     *
      * @param TemplateOverrideInterface $override
      * @return void
      * @throws LocalizedException
@@ -131,11 +136,15 @@ class TemplatePublisher implements TemplatePublisherInterface
         $allowedStatuses = [
             TemplateOverrideInterface::STATUS_DRAFT,
             TemplateOverrideInterface::STATUS_SCHEDULED,
+            TemplateOverrideInterface::STATUS_PUBLISHED,
         ];
 
         if (!in_array($override->getStatus(), $allowedStatuses, true)) {
             throw new LocalizedException(
-                __('Only draft or scheduled overrides can be published. Current status: %1', $override->getStatus())
+                __(
+                    'Only draft, scheduled, or published overrides can be published. Current status: %1',
+                    $override->getStatus()
+                )
             );
         }
     }

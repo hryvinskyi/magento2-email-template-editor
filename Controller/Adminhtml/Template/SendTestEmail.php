@@ -9,21 +9,19 @@ declare(strict_types=1);
 
 namespace Hryvinskyi\EmailTemplateEditor\Controller\Adminhtml\Template;
 
+use Hryvinskyi\EmailTemplateEditor\Api\CustomVariableMergerInterface;
 use Hryvinskyi\EmailTemplateEditor\Api\SampleDataProviderPoolInterface;
 use Hryvinskyi\EmailTemplateEditor\Api\TemplateRendererInterface;
 use Magento\Backend\App\Action;
 use Magento\Backend\App\Action\Context;
 use Magento\Framework\App\Action\HttpPostActionInterface;
+use Magento\Framework\App\Area;
+use Magento\Framework\App\Config\ScopeConfigInterface;
 use Magento\Framework\Controller\Result\Json;
 use Magento\Framework\Controller\Result\JsonFactory;
-use Magento\Framework\Mail\MessageInterfaceFactory;
-use Magento\Framework\Mail\TransportInterfaceFactory;
-use Magento\Framework\Mail\MimeMessageInterfaceFactory;
-use Magento\Framework\Mail\MimePartInterfaceFactory;
-use Magento\Framework\Mail\EmailMessageInterfaceFactory;
-use Magento\Framework\Mail\AddressConverter;
-use Magento\Framework\App\Config\ScopeConfigInterface;
+use Magento\Framework\Mail\Template\TransportBuilder;
 use Magento\Store\Model\ScopeInterface;
+use Magento\Store\Model\StoreManagerInterface;
 use Psr\Log\LoggerInterface;
 
 class SendTestEmail extends Action implements HttpPostActionInterface
@@ -31,15 +29,18 @@ class SendTestEmail extends Action implements HttpPostActionInterface
     public const ADMIN_RESOURCE = 'Hryvinskyi_EmailTemplateEditor::editor';
 
     /**
+     * Wrapper email template that simply outputs the pre-rendered HTML body
+     */
+    private const TEST_TEMPLATE_ID = 'hryvinskyi_email_template_editor_test';
+
+    /**
      * @param Context $context
      * @param JsonFactory $resultJsonFactory
      * @param TemplateRendererInterface $templateRenderer
      * @param SampleDataProviderPoolInterface $sampleDataProviderPool
-     * @param EmailMessageInterfaceFactory $emailMessageFactory
-     * @param MimeMessageInterfaceFactory $mimeMessageFactory
-     * @param MimePartInterfaceFactory $mimePartFactory
-     * @param AddressConverter $addressConverter
-     * @param TransportInterfaceFactory $transportFactory
+     * @param CustomVariableMergerInterface $customVariableMerger
+     * @param TransportBuilder $transportBuilder
+     * @param StoreManagerInterface $storeManager
      * @param ScopeConfigInterface $scopeConfig
      * @param LoggerInterface $logger
      */
@@ -48,11 +49,9 @@ class SendTestEmail extends Action implements HttpPostActionInterface
         private readonly JsonFactory $resultJsonFactory,
         private readonly TemplateRendererInterface $templateRenderer,
         private readonly SampleDataProviderPoolInterface $sampleDataProviderPool,
-        private readonly EmailMessageInterfaceFactory $emailMessageFactory,
-        private readonly MimeMessageInterfaceFactory $mimeMessageFactory,
-        private readonly MimePartInterfaceFactory $mimePartFactory,
-        private readonly AddressConverter $addressConverter,
-        private readonly TransportInterfaceFactory $transportFactory,
+        private readonly CustomVariableMergerInterface $customVariableMerger,
+        private readonly TransportBuilder $transportBuilder,
+        private readonly StoreManagerInterface $storeManager,
         private readonly ScopeConfigInterface $scopeConfig,
         private readonly LoggerInterface $logger
     ) {
@@ -61,6 +60,10 @@ class SendTestEmail extends Action implements HttpPostActionInterface
 
     /**
      * Send a test email with the current template content
+     *
+     * The pre-rendered HTML is sent through the standard TransportBuilder pipeline
+     * (rather than a manually constructed transport) so that store-scoped SMTP
+     * extensions, which hook into TransportBuilder, are applied to the message.
      *
      * @return Json
      */
@@ -93,10 +96,17 @@ class SendTestEmail extends Action implements HttpPostActionInterface
                 ]);
             }
 
-            $variables = [];
             $provider = $this->sampleDataProviderPool->getProvider($providerCode);
             $entityIdValue = $entityId !== null && $entityId !== '' ? (string)$entityId : null;
             $variables = $provider->getVariables($templateIdentifier, $storeId, $entityIdValue);
+
+            $customVariables = $this->getRequest()->getParam('custom_variables');
+            $variables = $this->customVariableMerger->merge(
+                $variables,
+                $customVariables !== null && $customVariables !== '' ? (string)$customVariables : null
+            );
+
+            $emailStoreId = $storeId > 0 ? $storeId : (int)$this->storeManager->getDefaultStoreView()->getId();
 
             $html = $this->templateRenderer->render(
                 $templateContent,
@@ -112,40 +122,30 @@ class SendTestEmail extends Action implements HttpPostActionInterface
                 : '';
             $subject = '[TEST] ' . ($processedSubject !== '' ? $processedSubject : 'Email Template Preview');
 
-            $mimePart = $this->mimePartFactory->create([
-                'content' => $html,
-                'type' => 'text/html',
-                'charset' => 'UTF-8',
-            ]);
-
-            $mimeMessage = $this->mimeMessageFactory->create([
-                'parts' => [$mimePart],
-            ]);
-
-            $to = $this->addressConverter->convert($recipientEmail);
-
             $senderEmail = $this->scopeConfig->getValue(
                 'trans_email/ident_general/email',
                 ScopeInterface::SCOPE_STORE,
-                $storeId
+                $emailStoreId
             ) ?: 'no-reply@example.com';
             $senderName = $this->scopeConfig->getValue(
                 'trans_email/ident_general/name',
                 ScopeInterface::SCOPE_STORE,
-                $storeId
+                $emailStoreId
             ) ?: 'Store';
-            $from = $this->addressConverter->convert($senderEmail, $senderName);
 
-            $emailMessage = $this->emailMessageFactory->create([
-                'body' => $mimeMessage,
-                'to' => [$to],
-                'from' => [$from],
-                'subject' => $subject,
-            ]);
-
-            $transport = $this->transportFactory->create([
-                'message' => $emailMessage,
-            ]);
+            $transport = $this->transportBuilder
+                ->setTemplateIdentifier(self::TEST_TEMPLATE_ID)
+                ->setTemplateOptions([
+                    'area' => Area::AREA_FRONTEND,
+                    'store' => $emailStoreId,
+                ])
+                ->setTemplateVars([
+                    'body' => $html,
+                    'subject' => $subject,
+                ])
+                ->setFromByScope(['email' => $senderEmail, 'name' => $senderName], $emailStoreId)
+                ->addTo($recipientEmail)
+                ->getTransport();
 
             $transport->sendMessage();
 

@@ -60,19 +60,35 @@ class Theme extends AbstractModel implements ThemeInterface
     }
 
     /**
+     * Legacy column name kept on disk until the declarative-schema rename runs.
+     * The model writes to both columns and reads with a fallback, so the editor works
+     * whether or not `setup:upgrade` has applied yet. Magento's ORM silently drops
+     * setData() calls for columns that don't exist in the table.
+     */
+    private const LEGACY_THEME_COLUMN = 'theme_json';
+
+    /**
      * {@inheritDoc}
      */
-    public function getThemeJson(): ?string
+    public function getThemeCss(): ?string
     {
-        return $this->getData(self::THEME_JSON);
+        $value = $this->getData(self::THEME_CSS);
+        if ($value === null || $value === '') {
+            $value = $this->getData(self::LEGACY_THEME_COLUMN);
+        }
+
+        return $value !== null ? (string)$value : null;
     }
 
     /**
      * {@inheritDoc}
      */
-    public function setThemeJson(string $themeJson): self
+    public function setThemeCss(string $themeCss): self
     {
-        return $this->setData(self::THEME_JSON, $themeJson);
+        $this->setData(self::THEME_CSS, $themeCss);
+        $this->setData(self::LEGACY_THEME_COLUMN, $themeCss);
+
+        return $this;
     }
 
     /**

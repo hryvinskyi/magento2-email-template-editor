@@ -82,7 +82,7 @@ define([
 
             require([
                 'Hryvinskyi_ConfigurationFields/js/codemirror/lib/codemirror',
-                'Hryvinskyi_ConfigurationFields/js/codemirror/mode/javascript/javascript',
+                'Hryvinskyi_ConfigurationFields/js/codemirror/mode/css/css',
                 'Hryvinskyi_ConfigurationFields/js/codemirror/addon/edit/matchbrackets',
                 'Hryvinskyi_ConfigurationFields/js/codemirror/addon/edit/closebrackets',
                 'Hryvinskyi_ConfigurationFields/js/codemirror/addon/fold/foldcode',
@@ -94,7 +94,7 @@ define([
                 }
 
                 self.editor = CodeMirror(el, {
-                    mode: {name: 'javascript', json: true},
+                    mode: 'text/css',
                     theme: 'default',
                     lineNumbers: true,
                     lineWrapping: false,
@@ -159,21 +159,18 @@ define([
 
             this._ajax(this.urls.themeLoad, {theme_id: themeId}).done(function (res) {
                 if (res.success && res.theme) {
-                    var json = res.theme.theme_json || '{}';
-
-                    try {
-                        json = JSON.stringify(JSON.parse(json), null, 2);
-                    } catch (e) {
-                        // use as-is
-                    }
+                    // The stored value is a Tailwind v4 CSS-first theme. Rows that pre-date the
+                    // storage migration still hold the legacy JSON shape - normalize so the
+                    // editor always shows v4 CSS regardless of which form is on disk.
+                    var content = self._normalizeThemeForEditor(res.theme.theme_css);
 
                     self.currentThemeId(themeId);
 
                     if (self.editor) {
-                        self.editor.setValue(json);
+                        self.editor.setValue(content);
                         self.editor.clearHistory();
                     } else {
-                        self._pendingValue = json;
+                        self._pendingValue = content;
                         self._tryCreateEditor();
                     }
                 }
@@ -181,12 +178,85 @@ define([
         },
 
         /**
-         * Return the current theme JSON string from the editor.
+         * Token sections in the legacy JSON shape mapped to v4 @theme namespaces.
+         */
+        _LEGACY_JSON_TO_V4_PREFIX: {
+            colors: 'color',
+            spacing: 'spacing',
+            fontSize: 'text',
+            fontFamily: 'font',
+            fontWeight: 'font-weight',
+            lineHeight: 'leading',
+            letterSpacing: 'tracking',
+            borderRadius: 'radius',
+            boxShadow: 'shadow',
+            opacity: 'opacity',
+            maxWidth: 'container',
+            zIndex: 'z'
+        },
+
+        /**
+         * Convert legacy JSON theme storage to a v4 @theme block for display in CodeMirror.
+         *
+         * @param {string|null|undefined} stored
+         * @return {string}
+         * @private
+         */
+        _normalizeThemeForEditor: function (stored) {
+            var content = stored == null ? '' : String(stored),
+                trimmed = content.replace(/^\s+/, ''),
+                data,
+                tokens,
+                section,
+                prefix,
+                bucket,
+                name,
+                lines = [];
+
+            if (trimmed.charAt(0) !== '{') {
+                return content || '@theme {\n}\n';
+            }
+
+            try {
+                data = JSON.parse(trimmed);
+            } catch (e) {
+                return content;
+            }
+
+            tokens = (data && data.tokens) || {};
+
+            for (section in this._LEGACY_JSON_TO_V4_PREFIX) {
+                if (!Object.prototype.hasOwnProperty.call(this._LEGACY_JSON_TO_V4_PREFIX, section)) {
+                    continue;
+                }
+
+                bucket = tokens[section];
+                if (!bucket || typeof bucket !== 'object') {
+                    continue;
+                }
+
+                prefix = this._LEGACY_JSON_TO_V4_PREFIX[section];
+                for (name in bucket) {
+                    if (!Object.prototype.hasOwnProperty.call(bucket, name)) {
+                        continue;
+                    }
+                    lines.push(
+                        '  --' + prefix + '-' + String(name).replace(/[^a-zA-Z0-9_-]/g, '-') +
+                        ': ' + String(bucket[name]).replace(/[;{}]/g, '') + ';'
+                    );
+                }
+            }
+
+            return lines.length ? '@theme {\n' + lines.join('\n') + '\n}\n' : '@theme {\n}\n';
+        },
+
+        /**
+         * Return the current theme CSS string from the editor.
          *
          * @return {string}
          */
-        getThemeJson: function () {
-            return this.editor ? this.editor.getValue() : '{}';
+        getThemeCss: function () {
+            return this.editor ? this.editor.getValue() : '@theme {\n}\n';
         },
 
         /**
@@ -223,15 +293,7 @@ define([
         confirmAdd: function () {
             var self = this,
                 name = $.trim(this.newThemeName()),
-                defaultJson = JSON.stringify({
-                    tokens: {
-                        colors: {},
-                        spacing: {},
-                        fontSize: {}
-                    },
-                    elements: {},
-                    utilities: {}
-                });
+                defaultCss = '@theme {\n  /* Add Tailwind v4 theme variables here, e.g.: */\n  /* --color-primary: #131CCF; */\n}\n';
 
             if (!name) {
                 return;
@@ -239,7 +301,7 @@ define([
 
             this._ajax(this.urls.themeSave, {
                 name: name,
-                theme_json: defaultJson,
+                theme_css: defaultCss,
                 store_id: this.storeId
             }, 'POST').done(function (res) {
                 if (res.success) {
@@ -385,7 +447,7 @@ define([
 
             this._ajax(this.urls.themeSave, {
                 theme_id: themeId,
-                theme_json: this.getThemeJson(),
+                theme_css: this.getThemeCss(),
                 store_id: this.storeId
             }, 'POST').done(function (res) {
                 if (res.success) {

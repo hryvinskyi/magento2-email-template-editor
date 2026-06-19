@@ -58,7 +58,7 @@ class Load extends Action implements HttpGetActionInterface
                 'theme' => [
                     'theme_id' => $theme->getThemeId(),
                     'name' => $theme->getName(),
-                    'theme_json' => $theme->getThemeJson(),
+                    'theme_css' => $theme->getThemeCss(),
                     'is_default' => $theme->getIsDefault(),
                     'store_id' => $theme->getStoreId(),
                     'created_at' => $theme->getCreatedAt(),

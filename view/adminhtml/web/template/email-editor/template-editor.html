@@ -3,14 +3,14 @@
     <button class="ete-icon-btn" data-bind="click: reloadTemplate" title="Reload Template">
         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
     </button>
-    <button class="ete-icon-btn" data-bind="click: formatCode" title="Format Code">
+    <button class="ete-icon-btn" data-bind="click: formatCode, enable: !isReadOnly()" title="Format Code">
         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H7a2 2 0 0 0-2 2v5a2 2 0 0 1-2 2 2 2 0 0 1 2 2v5a2 2 0 0 0 2 2h1"/><path d="M16 3h1a2 2 0 0 1 2 2v5a2 2 0 0 0 2 2 2 2 0 0 0-2 2v5a2 2 0 0 1-2 2h-1"/></svg>
     </button>
     <button class="ete-icon-btn" data-bind="click: toggleWrap" title="Toggle Word Wrap">
         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M3 12h15a3 3 0 1 1 0 6h-4"/><polyline points="13 16 11 18 13 20"/><path d="M3 18h4"/></svg>
     </button>
     <span class="ete-toolbar-separator"></span>
-    <button class="ete-icon-btn" data-bind="click: insertVariable" title="Insert Variable">
+    <button class="ete-icon-btn" data-bind="click: insertVariable, enable: !isReadOnly()" title="Insert Variable">
         <span data-bind="i18n: 'Insert Variable'"></span>
     </button>
 </div>

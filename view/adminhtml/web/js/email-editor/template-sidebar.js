@@ -36,23 +36,30 @@ define([
 
             this.expandedGroups = ko.observable({});
             this.expandedTemplates = ko.observable({});
+            this.currentStoreId = ko.observable(0);
 
             this.filteredGroups = ko.computed(function () {
                 var query = (this.searchQuery() || '').toLowerCase(),
                     allGroups = this.groups(),
-                    filter = this.filterMode();
+                    filter = this.filterMode(),
+                    storeId = this.currentStoreId(),
+                    self = this;
 
                 return allGroups.reduce(function (result, group) {
                     var matchingTemplates = group.templates.filter(function (tpl) {
                         var matchesSearch = true,
                             matchesFilter = true,
-                            hasOverrides = tpl.overrides && tpl.overrides.length > 0;
+                            hasOverrides = self._hasOverrideForStore(tpl, storeId);
 
                         if (query) {
                             matchesSearch = (tpl.label && tpl.label.toLowerCase().indexOf(query) !== -1) ||
                                 (tpl.id && tpl.id.toLowerCase().indexOf(query) !== -1);
                         }
 
+                        // The tree always lists every template so any of them can be
+                        // selected to create a new override for the chosen store. The
+                        // "Customized"/"Default" chips narrow this to templates that are
+                        // (or are not) overridden for the selected store specifically.
                         if (filter === 'customized') {
                             matchesFilter = hasOverrides;
                         } else if (filter === 'defaults') {
@@ -60,6 +67,12 @@ define([
                         }
 
                         return matchesSearch && matchesFilter;
+                    }).map(function (tpl) {
+                        // Show only the selected store's own overrides; the store-0
+                        // ("All Store Views") fallback is hidden under a specific store.
+                        // Then collapse a published override and its working draft into a
+                        // single row carrying a "draft pending" badge.
+                        return self._mergeOverridesForDisplay(self._scopeTemplateOverrides(tpl, storeId));
                     });
 
                     if (matchingTemplates.length > 0) {
@@ -76,6 +89,8 @@ define([
 
             this.templateCount = ko.computed(function () {
                 var groups = this.groups(),
+                    storeId = this.currentStoreId(),
+                    self = this,
                     total = 0,
                     customized = 0;
 
@@ -83,7 +98,9 @@ define([
                     group.templates.forEach(function (tpl) {
                         total++;
 
-                        if (tpl.overrides && tpl.overrides.length > 0) {
+                        // "Customized" counts templates overridden for the selected
+                        // store specifically; "All" stays the full template count.
+                        if (self._hasOverrideForStore(tpl, storeId)) {
                             customized++;
                         }
                     });
@@ -96,6 +113,117 @@ define([
         },
 
         /**
+         * Whether a template has an override applicable to the given store scope.
+         *
+         * For a specific store view only its own overrides count ("overridden for
+         * this store"); the store-0 ("All Store Views") fallback that the server
+         * also returns is intentionally excluded. For the "All Store Views" scope
+         * (0) any override counts.
+         *
+         * @param {Object} tpl
+         * @param {number} storeId
+         * @return {boolean}
+         */
+        _hasOverrideForStore: function (tpl, storeId) {
+            var overrides = tpl.overrides || [];
+
+            if (storeId === 0) {
+                return overrides.length > 0;
+            }
+
+            return overrides.some(function (override) {
+                return parseInt(override.store_id, 10) === storeId;
+            });
+        },
+
+        /**
+         * Return a copy of the template whose overrides are limited to the selected
+         * store. Under a specific store view the store-0 ("All Store Views") fallback
+         * the server also returns is removed, so the tree (expander, status dot and
+         * the override rows) reflects only overrides that belong to that store.
+         *
+         * @param {Object} tpl
+         * @param {number} storeId
+         * @return {Object}
+         */
+        _scopeTemplateOverrides: function (tpl, storeId) {
+            if (storeId === 0) {
+                return tpl;
+            }
+
+            var scoped = $.extend({}, tpl);
+
+            scoped.overrides = (tpl.overrides || []).filter(function (override) {
+                return parseInt(override.store_id, 10) === storeId;
+            });
+
+            return scoped;
+        },
+
+        /**
+         * Collapse a published override and its working draft into a single tree row.
+         *
+         * A live published override and an unpublished draft of the same customization
+         * are one thing in two states. This attaches the draft to the published entry as
+         * `pending_draft` and drops the standalone draft row, so the tree shows one row
+         * (with a "draft pending" badge) instead of two siblings. Templates with only a
+         * draft, scheduled entries, and any additional drafts are left untouched.
+         *
+         * @param {Object} tpl
+         * @return {Object}
+         */
+        _mergeOverridesForDisplay: function (tpl) {
+            var overrides = tpl.overrides || [],
+                published = null,
+                draft = null,
+                merged,
+                i;
+
+            for (i = 0; i < overrides.length; i++) {
+                if (published === null
+                    && overrides[i].status === 'published'
+                    && !overrides[i].active_from
+                    && !overrides[i].active_to
+                ) {
+                    published = overrides[i];
+                }
+            }
+
+            if (published === null) {
+                return tpl;
+            }
+
+            // Pair with the most recent draft (highest entity_id), matching the server's
+            // notion of the working draft; any older drafts stay as their own rows.
+            for (i = 0; i < overrides.length; i++) {
+                if (overrides[i].status === 'draft'
+                    && parseInt(overrides[i].store_id, 10) === parseInt(published.store_id, 10)
+                    && (draft === null
+                        || parseInt(overrides[i].entity_id, 10) > parseInt(draft.entity_id, 10))
+                ) {
+                    draft = overrides[i];
+                }
+            }
+
+            if (draft === null) {
+                return tpl;
+            }
+
+            merged = $.extend({}, tpl);
+            merged.overrides = overrides
+                .filter(function (override) {
+                    return override !== draft;
+                })
+                .map(function (override) {
+                    return override === published
+                        ? $.extend({}, override, {pending_draft: draft})
+                        : override;
+                });
+
+            return merged;
+        },
+
+        /**
          * Set the sidebar filter mode.
          *
          * @param {string} mode
@@ -105,14 +233,26 @@ define([
         },
 
         /**
+         * Clear the search query.
+         */
+        clearSearch: function () {
+            this.searchQuery('');
+        },
+
+        /**
          * Load template list from the server and populate groups.
          *
+         * @param {number} [storeId] Store view scope; remembered for subsequent refreshes.
          * @return {jQuery.Deferred}
          */
-        load: function () {
+        load: function (storeId) {
             var self = this;
 
-            return this._ajax(this.urls.loadList, 'GET', {}).done(function (res) {
+            if (storeId !== undefined) {
+                this.currentStoreId(parseInt(storeId, 10) || 0);
+            }
+
+            return this._ajax(this.urls.loadList, 'GET', {store_id: this.currentStoreId()}).done(function (res) {
                 if (res.success && res.templates) {
                     var grouped = [];
 
@@ -180,6 +320,38 @@ define([
         },
 
         /**
+         * Select the editable face of a tree override row: the attached pending draft
+         * when present (so editing continues on the draft), otherwise the override itself.
+         *
+         * @param {Object} overrideData
+         * @param {Object} templateData
+         */
+        selectOverrideEntry: function (overrideData, templateData) {
+            this.selectOverride(overrideData.pending_draft || overrideData, templateData);
+        },
+
+        /**
+         * Whether a tree override row is the active selection. A merged row is active
+         * when either its published entry or its attached pending draft is selected.
+         *
+         * @param {Object} overrideData
+         * @return {boolean}
+         */
+        isOverrideRowActive: function (overrideData) {
+            var active = this.activeOverrideId();
+
+            if (active === null || active === undefined) {
+                return false;
+            }
+
+            if (overrideData.entity_id === active) {
+                return true;
+            }
+
+            return !!overrideData.pending_draft && overrideData.pending_draft.entity_id === active;
+        },
+
+        /**
          * Toggle the expanded state of a group.
          *
          * @param {Object} groupData
@@ -200,6 +372,24 @@ define([
          */
         isGroupExpanded: function (key) {
             return ko.unwrap(this.expandedGroups())[key] === true;
+        },
+
+        /**
+         * Check whether a group should be rendered open.
+         *
+         * While a search query is active every matching group auto-expands so the
+         * results are visible without manual clicks; otherwise the manual
+         * expand/collapse state is used.
+         *
+         * @param {string} key
+         * @return {boolean}
+         */
+        isGroupOpen: function (key) {
+            if (this.searchQuery()) {
+                return true;
+            }
+
+            return this.isGroupExpanded(key);
         },
 
         /**

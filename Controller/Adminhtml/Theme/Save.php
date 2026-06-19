@@ -52,7 +52,7 @@ class Save extends Action implements HttpPostActionInterface
         try {
             $themeId = (int)$this->getRequest()->getParam('theme_id', 0);
             $name = (string)$this->getRequest()->getParam('name', '');
-            $themeJson = (string)$this->getRequest()->getParam('theme_json', '');
+            $themeCss = (string)$this->getRequest()->getParam('theme_css', '');
             $storeId = (int)$this->getRequest()->getParam('store_id', 0);
 
             if ($themeId && $name === '') {
@@ -67,19 +67,19 @@ class Save extends Action implements HttpPostActionInterface
                 ]);
             }
 
-            if ($themeJson === '') {
+            if ($themeCss === '') {
                 return $resultJson->setData([
                     'success' => false,
-                    'message' => (string)__('Theme JSON configuration is required.'),
+                    'message' => (string)__('Theme CSS is required.'),
                 ]);
             }
 
-            if (!$this->themeJsonValidator->validate($themeJson)) {
+            if (!$this->themeJsonValidator->validate($themeCss)) {
                 $errors = $this->themeJsonValidator->getErrors();
 
                 return $resultJson->setData([
                     'success' => false,
-                    'message' => (string)__('Invalid theme JSON: %1', implode(', ', $errors)),
+                    'message' => (string)__('Invalid theme CSS: %1', implode(', ', $errors)),
                 ]);
             }
 
@@ -92,7 +92,7 @@ class Save extends Action implements HttpPostActionInterface
             }
 
             $theme->setName($name);
-            $theme->setThemeJson($themeJson);
+            $theme->setThemeCss($themeCss);
             $theme->setStoreId($storeId);
             $this->themeRepository->save($theme);
 
@@ -101,7 +101,7 @@ class Save extends Action implements HttpPostActionInterface
                 'theme' => [
                     'theme_id' => $theme->getThemeId(),
                     'name' => $theme->getName(),
-                    'theme_json' => $theme->getThemeJson(),
+                    'theme_css' => $theme->getThemeCss(),
                     'is_default' => $theme->getIsDefault(),
                     'store_id' => $theme->getStoreId(),
                 ],

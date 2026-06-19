@@ -9,6 +9,7 @@ declare(strict_types=1);
 
 namespace Hryvinskyi\EmailTemplateEditor\Controller\Adminhtml\Template;
 
+use Hryvinskyi\EmailTemplateEditor\Api\CustomVariableMergerInterface;
 use Hryvinskyi\EmailTemplateEditor\Api\SampleDataProviderPoolInterface;
 use Hryvinskyi\EmailTemplateEditor\Api\TemplateRendererInterface;
 use Magento\Backend\App\Action;
@@ -29,13 +30,15 @@ class Preview extends Action implements HttpPostActionInterface
      * @param RawFactory $resultRawFactory
      * @param TemplateRendererInterface $templateRenderer
      * @param SampleDataProviderPoolInterface $sampleDataProviderPool
+     * @param CustomVariableMergerInterface $customVariableMerger
      */
     public function __construct(
         Context $context,
         private readonly JsonFactory $resultJsonFactory,
         private readonly RawFactory $resultRawFactory,
         private readonly TemplateRendererInterface $templateRenderer,
-        private readonly SampleDataProviderPoolInterface $sampleDataProviderPool
+        private readonly SampleDataProviderPoolInterface $sampleDataProviderPool,
+        private readonly CustomVariableMergerInterface $customVariableMerger
     ) {
         parent::__construct($context);
     }
@@ -55,6 +58,7 @@ class Preview extends Action implements HttpPostActionInterface
             $storeId = (int)$this->getRequest()->getParam('store_id', 0);
             $customCss = $this->getRequest()->getParam('custom_css');
             $tailwindCss = $this->getRequest()->getParam('tailwind_css');
+            $themeCss = $this->getRequest()->getParam('theme_css');
             $providerCode = (string)$this->getRequest()->getParam('provider_code', 'mock');
             $entityId = $this->getRequest()->getParam('entity_id');
 
@@ -75,6 +79,12 @@ class Preview extends Action implements HttpPostActionInterface
             $entityIdValue = $entityId !== null && $entityId !== '' ? (string)$entityId : null;
             $variables = $provider->getVariables($templateIdentifier, $storeId, $entityIdValue);
 
+            $customVariables = $this->getRequest()->getParam('custom_variables');
+            $variables = $this->customVariableMerger->merge(
+                $variables,
+                $customVariables !== null && $customVariables !== '' ? (string)$customVariables : null
+            );
+
             $isMockData = $providerCode === 'mock';
 
             $html = $this->templateRenderer->render(
@@ -84,7 +94,8 @@ class Preview extends Action implements HttpPostActionInterface
                 $customCss !== null && $customCss !== '' ? (string)$customCss : null,
                 $tailwindCss !== null && $tailwindCss !== '' ? (string)$tailwindCss : null,
                 $templateIdentifier !== '' ? $templateIdentifier : null,
-                $isMockData
+                $isMockData,
+                $themeCss !== null && $themeCss !== '' ? (string)$themeCss : null
             );
 
             if ($isRaw) {

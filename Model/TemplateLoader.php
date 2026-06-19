@@ -18,6 +18,7 @@ use Magento\Email\Model\Template\Config as EmailConfig;
 use Magento\Email\Model\TemplateFactory;
 use Magento\Framework\Filesystem;
 use Magento\Framework\Filesystem\Directory\ReadFactory;
+use Magento\Store\Model\App\Emulation;
 use Psr\Log\LoggerInterface;
 
 class TemplateLoader implements TemplateLoaderInterface
@@ -31,6 +32,7 @@ class TemplateLoader implements TemplateLoaderInterface
      * @param ReadFactory $readFactory
      * @param LoggerInterface $logger
      * @param PluginBypassFlagInterface $pluginBypassFlag
+     * @param Emulation $appEmulation
      */
     public function __construct(
         private readonly EmailConfig $emailConfig,
@@ -40,7 +42,8 @@ class TemplateLoader implements TemplateLoaderInterface
         private readonly Filesystem $filesystem,
         private readonly ReadFactory $readFactory,
         private readonly LoggerInterface $logger,
-        private readonly PluginBypassFlagInterface $pluginBypassFlag
+        private readonly PluginBypassFlagInterface $pluginBypassFlag,
+        private readonly Emulation $appEmulation
     ) {
     }
 
@@ -86,9 +89,9 @@ class TemplateLoader implements TemplateLoaderInterface
         bool $defaultOnly = false
     ): array {
         $area = $this->areaResolver->resolve($identifier);
-        $defaultData = $this->loadDefaultTemplate($identifier);
-        $drafts = $this->overrideRepository->getDrafts($identifier, $storeId);
-        $published = $this->overrideRepository->getPublished($identifier, $storeId);
+        $defaultData = $this->loadDefaultTemplate($identifier, $storeId, $area);
+        $drafts = $this->getDraftsWithFallback($identifier, $storeId);
+        $published = $this->getPublishedWithFallback($identifier, $storeId);
 
         if ($defaultOnly) {
             return [
@@ -97,6 +100,7 @@ class TemplateLoader implements TemplateLoaderInterface
                 'module' => $this->extractModuleName($identifier),
                 'area' => $area,
                 'entity_id' => null,
+                'store_id' => $storeId,
                 'default_content' => $defaultData['content'],
                 'default_subject' => $defaultData['subject'],
                 'default_styles' => $defaultData['styles'],
@@ -115,6 +119,8 @@ class TemplateLoader implements TemplateLoaderInterface
                 'drafts' => array_map([$this, 'buildOverrideData'], $drafts),
                 'active_from' => '',
                 'active_to' => '',
+                'sample_provider_code' => '',
+                'custom_variables' => '',
             ];
         }
 
@@ -155,6 +161,7 @@ class TemplateLoader implements TemplateLoaderInterface
             'module' => $this->extractModuleName($identifier),
             'area' => $area,
             'entity_id' => $activeOverride !== null ? $activeOverride->getEntityId() : null,
+            'store_id' => $activeOverride !== null ? (int)$activeOverride->getStoreId() : $storeId,
             'default_content' => $defaultData['content'],
             'default_subject' => $defaultData['subject'],
             'default_styles' => $defaultData['styles'],
@@ -177,16 +184,79 @@ class TemplateLoader implements TemplateLoaderInterface
             'drafts' => array_map([$this, 'buildOverrideData'], $drafts),
             'active_from' => $scheduleSource !== null ? ($scheduleSource->getActiveFrom() ?? '') : '',
             'active_to' => $scheduleSource !== null ? ($scheduleSource->getActiveTo() ?? '') : '',
+            'sample_provider_code' => $activeOverride !== null ? ($activeOverride->getSampleProviderCode() ?? '') : '',
+            'custom_variables' => $activeOverride !== null ? ($activeOverride->getCustomVariables() ?? '') : '',
         ];
+    }
+
+    /**
+     * Resolve the effective store scopes for override lookup
+     *
+     * Prefers the specific store and falls back to the default scope (store 0 = all
+     * store views), mirroring how overrides are matched at send time. This ensures a
+     * store-0 ("All Store Views") override is shown when a specific store is selected.
+     *
+     * @param int $storeId
+     * @return int[]
+     */
+    private function getStoreScopes(int $storeId): array
+    {
+        return $storeId !== 0 ? [$storeId, 0] : [0];
+    }
+
+    /**
+     * Get the published override for a store, falling back to the default scope
+     *
+     * @param string $identifier
+     * @param int $storeId
+     * @return TemplateOverrideInterface|null
+     */
+    private function getPublishedWithFallback(string $identifier, int $storeId): ?TemplateOverrideInterface
+    {
+        foreach ($this->getStoreScopes($storeId) as $scopeId) {
+            $published = $this->overrideRepository->getPublished($identifier, $scopeId);
+            if ($published !== null) {
+                return $published;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Get drafts for a store, falling back to the default scope when none exist
+     *
+     * @param string $identifier
+     * @param int $storeId
+     * @return TemplateOverrideInterface[]
+     */
+    private function getDraftsWithFallback(string $identifier, int $storeId): array
+    {
+        foreach ($this->getStoreScopes($storeId) as $scopeId) {
+            $drafts = $this->overrideRepository->getDrafts($identifier, $scopeId);
+            if (!empty($drafts)) {
+                return $drafts;
+            }
+        }
+
+        return [];
     }
 
     /**
      * Load the default template file content and extract metadata
      *
+     * When the identifier does not encode a specific theme, the file is resolved through
+     * the selected store's configured design theme (via environment emulation), so the
+     * editor shows the same template the store actually uses instead of the base module
+     * default. Theme-encoded identifiers (e.g. "..._template/Vendor/theme") keep forcing
+     * their own theme and need no emulation.
+     *
      * @param string $identifier
+     * @param int $storeId
+     * @param string $area
      * @return array{content: string, subject: string, styles: string, variables: string, type: int}
      */
-    private function loadDefaultTemplate(string $identifier): array
+    private function loadDefaultTemplate(string $identifier, int $storeId = 0, string $area = 'frontend'): array
     {
         $result = [
             'content' => '',
@@ -196,10 +266,16 @@ class TemplateLoader implements TemplateLoaderInterface
             'type' => 2,
         ];
 
+        $parts = $this->emailConfig->parseTemplateIdParts($identifier);
+        $baseTemplateId = $parts['templateId'];
+        $theme = $parts['theme'] ?? null;
+        $emulated = false;
+
         try {
-            $parts = $this->emailConfig->parseTemplateIdParts($identifier);
-            $baseTemplateId = $parts['templateId'];
-            $theme = $parts['theme'] ?? null;
+            if ($theme === null && $storeId > 0) {
+                $this->appEmulation->startEnvironmentEmulation($storeId, $area, true);
+                $emulated = true;
+            }
 
             $template = $this->templateFactory->create();
             $template->setForcedArea($baseTemplateId);
@@ -225,6 +301,10 @@ class TemplateLoader implements TemplateLoaderInterface
             $this->logger->error(
                 'Failed to load default template "' . $identifier . '": ' . $e->getMessage()
             );
+        } finally {
+            if ($emulated) {
+                $this->appEmulation->stopEnvironmentEmulation();
+            }
         }
 
         return $result;
@@ -304,29 +384,33 @@ class TemplateLoader implements TemplateLoaderInterface
     {
         $overrides = [];
         $seenIds = [];
+        $scopes = $this->getStoreScopes($storeId);
 
         try {
-            $publishedList = $this->overrideRepository->getPublishedList($templateId, $storeId);
-
-            foreach ($publishedList as $published) {
-                $overrides[] = $this->buildOverrideSummary($published);
-                $seenIds[$published->getEntityId()] = true;
-            }
-
-            $scheduledList = $this->overrideRepository->getScheduledOverrides($templateId, $storeId);
-
-            foreach ($scheduledList as $scheduled) {
-                if (!isset($seenIds[$scheduled->getEntityId()])) {
-                    $overrides[] = $this->buildOverrideSummary($scheduled);
-                    $seenIds[$scheduled->getEntityId()] = true;
+            foreach ($scopes as $scopeId) {
+                foreach ($this->overrideRepository->getPublishedList($templateId, $scopeId) as $published) {
+                    if (!isset($seenIds[$published->getEntityId()])) {
+                        $overrides[] = $this->buildOverrideSummary($published);
+                        $seenIds[$published->getEntityId()] = true;
+                    }
                 }
             }
 
-            $drafts = $this->overrideRepository->getDrafts($templateId, $storeId);
+            foreach ($scopes as $scopeId) {
+                foreach ($this->overrideRepository->getScheduledOverrides($templateId, $scopeId) as $scheduled) {
+                    if (!isset($seenIds[$scheduled->getEntityId()])) {
+                        $overrides[] = $this->buildOverrideSummary($scheduled);
+                        $seenIds[$scheduled->getEntityId()] = true;
+                    }
+                }
+            }
 
-            foreach ($drafts as $draft) {
-                if (!isset($seenIds[$draft->getEntityId()])) {
-                    $overrides[] = $this->buildOverrideSummary($draft);
+            foreach ($scopes as $scopeId) {
+                foreach ($this->overrideRepository->getDrafts($templateId, $scopeId) as $draft) {
+                    if (!isset($seenIds[$draft->getEntityId()])) {
+                        $overrides[] = $this->buildOverrideSummary($draft);
+                        $seenIds[$draft->getEntityId()] = true;
+                    }
                 }
             }
         } catch (\Exception) {
@@ -340,20 +424,23 @@ class TemplateLoader implements TemplateLoaderInterface
      * Build a short summary of an override for the sidebar tree
      *
      * @param TemplateOverrideInterface $override
-     * @return array{entity_id: int, label: string, draft_name: string|null, status: string, scheduled_at: string|null, active_from: string|null, active_to: string|null, last_edited_by: string|null, updated_at: string|null}
+     * @return array{entity_id: int, store_id: int, label: string, draft_name: string|null, status: string, scheduled_at: string|null, active_from: string|null, active_to: string|null, last_edited_by: string|null, updated_at: string|null}
      */
     private function buildOverrideSummary(TemplateOverrideInterface $override): array
     {
         $draftName = $override->getDraftName();
         $comment = $override->getVersionComment();
-        $label = $comment !== null && $comment !== ''
-            ? $comment
-            : ($draftName !== null && $draftName !== ''
-                ? $draftName
+        // The explicit name (set via Rename) takes precedence over the publish
+        // comment, so renaming an override is reflected in the tree label.
+        $label = $draftName !== null && $draftName !== ''
+            ? $draftName
+            : ($comment !== null && $comment !== ''
+                ? $comment
                 : 'Untitled');
 
         return [
             'entity_id' => $override->getEntityId(),
+            'store_id' => (int)$override->getStoreId(),
             'label' => $label,
             'version_comment' => $comment,
             'draft_name' => $draftName,
@@ -395,6 +482,8 @@ class TemplateLoader implements TemplateLoaderInterface
             'created_by_username' => $override->getCreatedByUsername(),
             'last_edited_by' => $override->getLastEditedByUsername(),
             'is_active' => $override->getIsActive(),
+            'sample_provider_code' => $override->getSampleProviderCode(),
+            'custom_variables' => $override->getCustomVariables(),
         ];
     }
 

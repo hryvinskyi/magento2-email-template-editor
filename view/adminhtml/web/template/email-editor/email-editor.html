@@ -12,11 +12,34 @@
         <!-- ko template: 'Hryvinskyi_EmailTemplateEditor/email-editor/toolbar' --><!-- /ko -->
     </div>
 
+    <!-- Draft notice: an unpublished draft is being edited; changes stay out of sent emails until published -->
+    <!-- ko if: currentTemplateStatus() === 'draft' && !viewingDefault() -->
+    <div class="ete-draft-notice">
+        <svg class="ete-draft-notice-icon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        <!-- ko if: hasPublished() -->
+        <span class="ete-draft-notice-text" data-bind="i18n: 'You are editing a draft — these changes are not live yet. A different published version is still being sent. Publish this draft to make it live.'"></span>
+        <button type="button" class="ete-draft-notice-action" data-bind="click: viewPublishedVersion, i18n: 'View published version'"></button>
+        <!-- /ko -->
+        <!-- ko ifnot: hasPublished() -->
+        <span class="ete-draft-notice-text" data-bind="i18n: 'This is a draft — your changes are saved but not live yet. Publish this draft to apply it to sent emails.'"></span>
+        <!-- /ko -->
+    </div>
+    <!-- /ko -->
+
+    <!-- Live notice: viewing the published (live) version while an unpublished draft still exists -->
+    <!-- ko if: currentTemplateStatus() === 'published' && hasDraft() && !viewingDefault() -->
+    <div class="ete-draft-notice ete-live-notice">
+        <svg class="ete-draft-notice-icon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+        <span class="ete-draft-notice-text" data-bind="i18n: 'You are viewing the published (live) version. Your unpublished draft has newer changes that are not live yet.'"></span>
+        <button type="button" class="ete-draft-notice-action" data-bind="click: editWorkingDraft, i18n: 'Back to draft'"></button>
+    </div>
+    <!-- /ko -->
+
     <!-- Main Content Area -->
     <div class="ete-main">
 
         <!-- Left Sidebar: Template Tree -->
-        <div class="ete-sidebar">
+        <div class="ete-sidebar" data-bind="css: {'ete-sidebar-collapsed': sidebarCollapsed}">
             <!-- ko foreach: getRegion('templateSidebar') -->
             <!-- ko template: getTemplate() --><!-- /ko -->
             <!-- /ko -->
@@ -26,7 +49,7 @@
         <div class="ete-panels-container">
 
             <!-- Editor Panel -->
-            <div class="ete-panel-left" data-bind="attr: {id: 'ete-panel-left'}">
+            <div class="ete-panel-left" data-bind="attr: {id: 'ete-panel-left'}, event: {scroll: handlePanelLeftScroll}">
 
                 <!-- Draft List Panel -->
                 <!-- ko foreach: getRegion('draftListPanel') -->
@@ -44,16 +67,18 @@
                     </div>
                     <div class="ete-section-body" data-bind="visible: !customDataCollapsed()">
                         <div class="ete-custom-data-hint">
-                            <span data-bind="i18n: 'Enter template variables as JSON. These will be merged with base store variables.'"></span>
+                            <span data-bind="i18n: 'Template variables found in the email are listed below as JSON. Fill in sample values; they will be merged with base store variables.'"></span>
                         </div>
-                        <textarea class="ete-custom-data-textarea" data-bind="value: customDataJson, valueUpdate: 'afterkeydown'" placeholder='{"customer_name": "John Doe", "order_id": "100000001"}'></textarea>
+                        <!-- ko foreach: getRegion('customDataEditor') -->
+                        <!-- ko template: getTemplate() --><!-- /ko -->
+                        <!-- /ko -->
                     </div>
                 </div>
 
                 <!-- Subject Line -->
                 <div class="ete-subject-row">
                     <label class="ete-toolbar-label" data-bind="i18n: 'Subject:'"></label>
-                    <input type="text" class="ete-input" data-bind="value: subject, valueUpdate: 'afterkeydown', attr: {placeholder: $t('Email subject line...')}"/>
+                    <input type="text" class="ete-input" data-bind="value: subject, valueUpdate: 'afterkeydown', enable: !isReadOnly(), attr: {placeholder: $t('Email subject line...')}"/>
                 </div>
 
                 <!-- Template Section -->

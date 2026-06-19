@@ -11,18 +11,16 @@ namespace Hryvinskyi\EmailTemplateEditor\Model;
 
 use Hryvinskyi\EmailTemplateEditor\Api\ThemeJsonValidatorInterface;
 
+/**
+ * Lenient validator for the v4 CSS-first theme format
+ *
+ * Accepts either a Tailwind v4 CSS-first theme string (with at least one
+ * `@theme { … }` block) or the legacy pre-v4 JSON shape, so unmigrated stored themes
+ * continue to validate. The class/interface name keeps the "ThemeJson" wording for
+ * binary compatibility with downstream code; the contract widened from JSON to CSS.
+ */
 class ThemeJsonValidator implements ThemeJsonValidatorInterface
 {
-    /**
-     * Required top-level sections in the theme JSON
-     */
-    private const REQUIRED_SECTIONS = ['tokens', 'elements', 'utilities'];
-
-    /**
-     * Required keys within the tokens section
-     */
-    private const REQUIRED_TOKEN_KEYS = ['colors', 'spacing', 'fontSize'];
-
     /**
      * Accumulated validation errors
      *
@@ -33,32 +31,34 @@ class ThemeJsonValidator implements ThemeJsonValidatorInterface
     /**
      * @inheritDoc
      */
-    public function validate(string $json): bool
+    public function validate(string $value): bool
     {
         $this->errors = [];
-        $data = json_decode($json, true);
+        $trimmed = trim($value);
 
-        if (json_last_error() !== JSON_ERROR_NONE) {
-            $this->errors[] = 'Invalid JSON: ' . json_last_error_msg();
+        if ($trimmed === '') {
+            $this->errors[] = 'Theme content is empty.';
             return false;
         }
 
-        if (!is_array($data)) {
-            $this->errors[] = 'Theme JSON must be an object.';
-            return false;
-        }
-
-        foreach (self::REQUIRED_SECTIONS as $section) {
-            if (!isset($data[$section]) || !is_array($data[$section])) {
-                $this->errors[] = sprintf('Missing or invalid required section: "%s".', $section);
+        if (str_starts_with($trimmed, '{')) {
+            $data = json_decode($trimmed, true);
+            if (is_array($data) && (isset($data['tokens']) || isset($data['elements']) || isset($data['utilities']))) {
+                return true;
             }
         }
 
-        if (isset($data['tokens']) && is_array($data['tokens'])) {
-            $this->validateTokenKeys($data['tokens']);
+        if (!preg_match('/@theme\s*\{[^}]*\}/i', $trimmed)) {
+            $this->errors[] = 'Theme CSS must contain at least one "@theme { … }" block.';
+            return false;
         }
 
-        return empty($this->errors);
+        if (substr_count($trimmed, '{') !== substr_count($trimmed, '}')) {
+            $this->errors[] = 'Theme CSS has unbalanced braces.';
+            return false;
+        }
+
+        return true;
     }
 
     /**
@@ -67,33 +67,5 @@ class ThemeJsonValidator implements ThemeJsonValidatorInterface
     public function getErrors(): array
     {
         return $this->errors;
-    }
-
-    /**
-     * Validate required keys within the tokens section
-     *
-     * @param array<string, mixed> $tokens
-     * @return void
-     */
-    private function validateTokenKeys(array $tokens): void
-    {
-        foreach (self::REQUIRED_TOKEN_KEYS as $key) {
-            if (!isset($tokens[$key]) || !is_array($tokens[$key])) {
-                $this->errors[] = sprintf('Missing or invalid token key: "tokens.%s".', $key);
-            }
-        }
-
-        $validTokenValueTypes = ['colors', 'spacing', 'fontSize', 'fontFamily', 'borderRadius',
-            'lineHeight', 'fontWeight', 'letterSpacing', 'maxWidth', 'boxShadow', 'opacity', 'zIndex'];
-
-        foreach ($validTokenValueTypes as $tokenKey) {
-            if (isset($tokens[$tokenKey]) && !is_array($tokens[$tokenKey])) {
-                $this->errors[] = sprintf('Token key "tokens.%s" must be an object.', $tokenKey);
-            }
-        }
-
-        if (isset($tokens['googleFonts']) && !is_array($tokens['googleFonts'])) {
-            $this->errors[] = 'Token key "tokens.googleFonts" must be an array.';
-        }
     }
 }

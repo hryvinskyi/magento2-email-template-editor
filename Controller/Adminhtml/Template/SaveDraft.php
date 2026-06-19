@@ -61,6 +61,8 @@ class SaveDraft extends Action implements HttpPostActionInterface
             $draftName = $this->getRequest()->getParam('draft_name');
             $activeFrom = $this->getRequest()->getParam('active_from');
             $activeTo = $this->getRequest()->getParam('active_to');
+            $providerCode = $this->getRequest()->getParam('provider_code');
+            $customVariables = $this->getRequest()->getParam('custom_variables');
 
             if ($templateIdentifier === '') {
                 return $resultJson->setData([
@@ -104,9 +106,26 @@ class SaveDraft extends Action implements HttpPostActionInterface
             $draft->setCustomCss($customCss !== null && $customCss !== '' ? (string)$customCss : null);
             $draft->setTailwindCss($tailwindCss !== null && $tailwindCss !== '' ? (string)$tailwindCss : null);
             $draft->setThemeId($themeId !== null && $themeId !== '' ? (int)$themeId : null);
-            $draft->setDraftName($draftName !== null && $draftName !== '' ? (string)$draftName : null);
+            // Only overwrite the draft name when the client actually provides it. Autosave
+            // and publish omit draft_name, so treating an absent value as "clear" would wipe
+            // a named draft's name on the next save (leaving it shown as "Untitled").
+            if ($draftName !== null && $draftName !== '') {
+                $draft->setDraftName((string)$draftName);
+            }
             $draft->setActiveFrom($activeFrom !== null && $activeFrom !== '' ? (string)$activeFrom : null);
             $draft->setActiveTo($activeTo !== null && $activeTo !== '' ? (string)$activeTo : null);
+
+            // Remember which preview data source this override was last edited with, so
+            // re-opening it restores that selection instead of defaulting to the primary
+            // provider. The custom sample-data JSON is only meaningful for the "custom"
+            // provider, so it is stored only then and cleared otherwise to avoid stale data.
+            $providerCode = $providerCode !== null && $providerCode !== '' ? (string)$providerCode : null;
+            $draft->setSampleProviderCode($providerCode);
+            $draft->setCustomVariables(
+                $providerCode === 'custom' && $customVariables !== null && $customVariables !== ''
+                    ? (string)$customVariables
+                    : null
+            );
 
             $adminUser = $this->authSession->getUser();
 

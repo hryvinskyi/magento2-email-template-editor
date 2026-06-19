@@ -33,6 +33,8 @@ interface TemplateOverrideInterface
     public const ACTIVE_FROM = 'active_from';
     public const ACTIVE_TO = 'active_to';
     public const IS_ACTIVE = 'is_active';
+    public const SAMPLE_PROVIDER_CODE = 'sample_provider_code';
+    public const CUSTOM_VARIABLES = 'custom_variables';
 
     public const STATUS_DRAFT = 'draft';
     public const STATUS_PUBLISHED = 'published';
@@ -359,4 +361,34 @@ interface TemplateOverrideInterface
      * @return $this
      */
     public function setIsActive(bool $isActive): self;
+
+    /**
+     * Get the selected preview sample-data provider code
+     *
+     * @return string|null
+     */
+    public function getSampleProviderCode(): ?string;
+
+    /**
+     * Set the selected preview sample-data provider code
+     *
+     * @param string|null $providerCode
+     * @return $this
+     */
+    public function setSampleProviderCode(?string $providerCode): self;
+
+    /**
+     * Get the custom preview sample-data JSON (used when the provider is custom)
+     *
+     * @return string|null
+     */
+    public function getCustomVariables(): ?string;
+
+    /**
+     * Set the custom preview sample-data JSON (used when the provider is custom)
+     *
+     * @param string|null $customVariables
+     * @return $this
+     */
+    public function setCustomVariables(?string $customVariables): self;
 }

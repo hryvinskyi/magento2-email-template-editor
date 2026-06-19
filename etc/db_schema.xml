@@ -13,7 +13,8 @@
         <column xsi:type="int" name="theme_id" unsigned="true" nullable="false" identity="true"
                 comment="Theme ID"/>
         <column xsi:type="varchar" name="name" nullable="false" length="255" comment="Theme Name"/>
-        <column xsi:type="mediumtext" name="theme_json" nullable="false" comment="Theme JSON Configuration"/>
+        <column xsi:type="mediumtext" name="theme_json" disabled="true" nullable="false" comment="Theme JSON Configuration (renamed to theme_css)"/>
+        <column xsi:type="mediumtext" name="theme_css" nullable="false" onCreate="migrateDataFrom(theme_json)" comment="Theme CSS (Tailwind v4 @theme block)"/>
         <column xsi:type="smallint" name="is_default" unsigned="true" nullable="false" default="0"
                 comment="Is Default Theme"/>
         <column xsi:type="int" name="store_id" unsigned="true" nullable="false" default="0"
@@ -86,6 +87,10 @@
                 comment="Schedule End DateTime"/>
         <column xsi:type="smallint" name="is_active" unsigned="true" nullable="false" default="1"
                 comment="Is Override Active"/>
+        <column xsi:type="varchar" name="sample_provider_code" nullable="true" length="64"
+                comment="Selected Preview Sample-Data Provider Code"/>
+        <column xsi:type="mediumtext" name="custom_variables" nullable="true"
+                comment="Custom Preview Sample-Data JSON (used when provider is custom)"/>
         <index referenceId="HRYVINSKYI_EMAIL_TPL_OVERRIDE_TEMPLATE_IDENT_STORE_STATUS" indexType="btree">
             <column name="template_identifier"/>
             <column name="store_id"/>

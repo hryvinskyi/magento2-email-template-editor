@@ -21,6 +21,8 @@ interface TemplateRendererInterface
      * @param string|null $tailwindCss Auto-generated Tailwind CSS
      * @param string|null $templateIdentifier Template identifier for context-aware rendering
      * @param bool $isMockData When true, layout directives are replaced with placeholders
+     * @param string|null $themeCssOverride Theme CSS to use as token source (e.g. the editor's
+     *                                       current draft); when null, the store's default theme is loaded.
      * @return string Rendered HTML with inlined CSS
      */
     public function render(
@@ -30,7 +32,8 @@ interface TemplateRendererInterface
         ?string $customCss = null,
         ?string $tailwindCss = null,
         ?string $templateIdentifier = null,
-        bool $isMockData = false
+        bool $isMockData = false,
+        ?string $themeCssOverride = null
     ): string;
 
     /**
