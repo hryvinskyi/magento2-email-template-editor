@@ -1,0 +1,2306 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+/**
+ * Copyright (c) 2026. Volodymyr Hryvinskyi. All rights reserved.
+ * Author: Volodymyr Hryvinskyi <volodymyr@hryvinskyi.com>
+ * GitHub: https://github.com/hryvinskyi
+ */
+-->
+<!--
+    The hand-written part of the variable knowledge base. Any module may ship a file of this name;
+    they are merged, and an entry here always beats one derived from what Magento happens to know.
+
+    The four entries in the first block are worked examples of the four things an administrator can
+    be offered - a deep link, an editor in the inspector itself, written steps, and the honest
+    answer that nothing can be done. They are real entries and not placeholders, so leave them where
+    they are and add new ones to the blocks below rather than replacing these.
+-->
+<variables xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+           xsi:noNamespaceSchemaLocation="urn:magento:module:Hryvinskyi_EmailTemplateEditor:etc/email_variables.xsd">
+
+    <variable kind="config" expression="trans_email/ident_general/name" outputKind="text">
+        <title>General Contact sender name</title>
+        <summary>The name messages sent from the General Contact identity appear to come from.</summary>
+        <origin kind="config" locator="trans_email/ident_general/name">
+            Stored in the configuration under Stores &gt; Configuration &gt; General &gt; Store Email
+            Addresses &gt; General Contact. Magento\Email\Model\Template\Filter::configDirective reads
+            it through the scope configuration for the store view the message is sent in.
+        </origin>
+        <affordance kind="link" label="Open Store Email Addresses" route="adminhtml/system_config/edit"
+                    scopeAware="true">
+            <param name="section">trans_email</param>
+            <fragment>trans_email_ident_general-link</fragment>
+        </affordance>
+        <caveat id="scope">
+            The value can differ per store view, so check the scope switcher on the configuration page
+            before deciding the value is wrong.
+        </caveat>
+    </variable>
+
+    <variable kind="config" expression="trans_email/ident_general/email" outputKind="text">
+        <title>General Contact sender address</title>
+        <summary>The email address messages sent from the General Contact identity are sent from.</summary>
+        <origin kind="config" locator="trans_email/ident_general/email">
+            Stored in the configuration under Stores &gt; Configuration &gt; General &gt; Store Email
+            Addresses &gt; General Contact. Magento\Email\Model\Template\Filter::configDirective reads
+            it through the scope configuration for the store view the message is sent in.
+        </origin>
+        <affordance kind="inline" label="Sender email address" editorType="text"
+                    route="adminhtml/system_config/edit" scopeAware="true">
+            <param name="section">trans_email</param>
+            <fragment>trans_email_ident_general-link</fragment>
+        </affordance>
+        <caveat id="validation">
+            The address is checked when it is saved by
+            Magento\Config\Model\Config\Backend\Email\Address, so a value that is not an email address
+            is refused rather than stored.
+        </caveat>
+        <caveat id="scope">
+            The value can differ per store view. The scope named beside the editor is the one that
+            will be written.
+        </caveat>
+    </variable>
+
+    <variable kind="css" expression="css/email.css" outputKind="text">
+        <title>Email stylesheet</title>
+        <summary>The stylesheet the message carries in its head, taken from the current theme.</summary>
+        <origin kind="computed" locator="Magento\Email\Model\Template\Filter::cssDirective">
+            The directive loads the named stylesheet from the theme the message is rendered with,
+            compiles it, and puts the result where the directive stands. In the default theme the
+            source of this file is web/css/email.less.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="copy">
+                Copy the stylesheet into your own theme, under web/css/ in the theme directory.
+            </step>
+            <step id="edit">
+                Edit the copy. A file in the theme takes precedence over the one the theme inherits.
+            </step>
+            <step id="deploy">
+                Deploy static content so the change reaches the next message that is sent.
+            </step>
+        </affordance>
+        <caveat id="plain-text">
+            In a plain-text template the directive produces nothing at all.
+        </caveat>
+        <caveat id="failure">
+            When the file cannot be loaded, or compiles to nothing, the directive leaves a CSS comment
+            in the message rather than reporting an error.
+        </caveat>
+    </variable>
+
+    <variable kind="var" expression="store.getId()" outputKind="number">
+        <title>Store view id, written as a method call</title>
+        <summary>
+            This does not print the store view id. On a standard installation it prints nothing at all.
+        </summary>
+        <origin kind="computed" locator="Magento\Framework\Filter\VariableResolver\StrictResolver::resolve">
+            A path inside {{var}} is never a method call. getId() is read as a request for an id value
+            held on the store object, and the store record carries store_id rather than id, so the path
+            comes back empty.
+        </origin>
+        <affordance kind="instruction" label="What to write instead">
+            <step id="use-the-property">
+                Write {{var store.store_id}}, which reads the value the store record actually carries.
+            </step>
+        </affordance>
+        <caveat id="fails-silently">
+            Nothing reports this. The directive is replaced by an empty string.
+        </caveat>
+    </variable>
+
+    <variable kind="var" expression="store.store_id" outputKind="number">
+        <title>Store view id</title>
+        <summary>The numeric identifier of the store view the message is being sent for.</summary>
+        <origin kind="template_var" locator="store_id">
+            Magento\Email\Model\AbstractTemplate puts the store view the message is being sent for into
+            the template variables under the name store, and store_id is a column of the store record
+            it carries.
+        </origin>
+        <affordance kind="instruction" label="Where this value comes from">
+            <step id="fixed-at-creation">
+                A store view keeps the id it was given when it was created. Nothing in the
+                administration changes it.
+            </step>
+            <step id="where-to-see-it">
+                The store views on this installation are listed under Stores, All Stores.
+            </step>
+        </affordance>
+        <caveat id="not-a-label">
+            The id is a database key rather than anything an administrator chose, so it means nothing
+            to a recipient.
+        </caveat>
+    </variable>
+
+    <!--
+        Entries describing the directive kinds themselves, the configuration paths a message may read,
+        and the store and custom variables, belong below this line.
+    -->
+
+    <variable kind="var" expression="" outputKind="text">
+        <title>The {{var}} directive</title>
+        <summary>
+            Prints a value the code that sends the message put into the template, such as a field of
+            the order, of the customer or of the store view.
+        </summary>
+        <origin kind="directive" locator="Magento\Email\Model\Template\Filter::varDirective">
+            The name inside the directive is a path into the values the sending code assigned to the
+            template: the first part names one of those values and each part after a full stop reads
+            something out of it.
+        </origin>
+        <affordance kind="instruction" label="How to change what this prints">
+            <step id="choose">
+                To print something else, pick another variable from the variable chooser. That list is
+                what the code sending this particular message makes available; a name that is not on it
+                prints nothing.
+            </step>
+            <step id="format">
+                To change how it is printed, use the formatting controls in this panel rather than
+                typing after the vertical bar, so that only the formatting is rewritten.
+            </step>
+            <step id="value">
+                To change the value itself, change the record it is read from - the order, the
+                customer, the store configuration. Nothing in the template writes it.
+            </step>
+        </affordance>
+        <caveat id="escaped-by-default">
+            In an email template a {{var}} directive with no vertical bar in it is escaped as HTML.
+            That comes from the email template filter rather than from the directive: text run through
+            Magento\Framework\Filter\Template on its own - the store address layout, for one - gets no
+            escaping at all, so the rule cannot be carried over to templates outside email.
+        </caveat>
+        <caveat id="unknown-names-are-ignored">
+            Only escape and nl2br are implemented. Everything after the first vertical bar is read as
+            the formatting, and a name that is neither of those two is skipped without a word. That is
+            the whole of how |raw works, and it is also why a misspelling such as |rwa switches the
+            escaping off just as effectively.
+        </caveat>
+        <caveat id="argument-spelling">
+            The argument of escape is matched exactly, and the three it accepts are html, htmlentities
+            and url. |escape:HTML matches none of them and the value comes back unescaped, so it does
+            the opposite of what it looks like it is asking for.
+        </caveat>
+        <caveat id="methods-are-not-called">
+            A part of the path written with brackets after it is not a method call. store.getFrontendName()
+            is read as a request for the frontend_name value held on the store object, and a name that
+            does not begin with get is not read at all, so {{var store.isActive()}} prints nothing.
+        </caveat>
+        <caveat id="no-variables-at-all">
+            When a message is rendered with no template variables assigned at all, the directive is
+            left in the output exactly as it was written instead of being replaced.
+        </caveat>
+    </variable>
+
+    <variable kind="config" expression="" outputKind="text">
+        <title>The {{config}} directive</title>
+        <summary>
+            Prints the value of one store configuration setting, read for the store view the message
+            is sent in.
+        </summary>
+        <origin kind="directive" locator="Magento\Email\Model\Template\Filter::configDirective">
+            The directive reads the configuration path named by its path parameter while the message
+            is being rendered, for the store view it is sent in, so a store view value overrides the
+            website value, which overrides the default.
+        </origin>
+        <affordance kind="instruction" label="How to make another setting readable">
+            <step id="where">
+                The list of readable paths is a dependency injection argument of
+                Magento\Variable\Model\Config\Structure\AvailableVariables. No admin page changes it.
+            </step>
+            <step id="add">
+                In a module of your own, add an item for the path to that argument, grouped under the
+                configuration group it belongs to, exactly as Magento_Variable does for the paths
+                below.
+            </step>
+            <step id="flush">
+                Flush the configuration cache; until then the directive keeps rendering as an empty
+                string.
+            </step>
+        </affordance>
+        <caveat id="readable-paths">
+            A {{config}} directive reads twenty-two paths and no others: web/unsecure/base_url,
+            web/secure/base_url, trans_email/ident_general/name, trans_email/ident_general/email,
+            trans_email/ident_sales/name, trans_email/ident_sales/email,
+            trans_email/ident_support/name, trans_email/ident_support/email,
+            trans_email/ident_custom1/name, trans_email/ident_custom1/email,
+            trans_email/ident_custom2/name, trans_email/ident_custom2/email,
+            general/store_information/name, general/store_information/phone,
+            general/store_information/hours, general/store_information/country_id,
+            general/store_information/region_id, general/store_information/postcode,
+            general/store_information/city, general/store_information/street_line1,
+            general/store_information/street_line2 and general/store_information/merchant_vat_number.
+        </caveat>
+        <caveat id="silently-empty">
+            Any other path renders as an empty string. Nothing is logged and nothing is shown, so a
+            directive naming a perfectly real setting that is not on the list looks exactly like a
+            setting that has no value.
+        </caveat>
+        <caveat id="no-formatting">
+            This directive takes no formatting. A vertical bar written inside it is either dropped, or
+            - if the path is not in quotation marks - becomes part of the path, which then matches
+            nothing and renders as an empty string.
+        </caveat>
+    </variable>
+
+    <variable kind="customVar" expression="" outputKind="html">
+        <title>The {{customVar}} directive</title>
+        <summary>
+            Prints one of the custom variables kept under System &gt; Other Settings &gt; Custom
+            Variables.
+        </summary>
+        <origin kind="directive" locator="Magento\Email\Model\Template\Filter::customvarDirective">
+            The directive loads the variable whose code its code parameter names, for the store view
+            the message is sent in, and prints its HTML value in an HTML message and its plain value
+            in a plain-text one.
+        </origin>
+        <affordance kind="link" label="Open Custom Variables" route="adminhtml/system_variable/index"/>
+        <caveat id="html-falls-back-to-plain">
+            A variable with no HTML value is not empty in an HTML message: the plain value is printed
+            instead, with its HTML escaped and its line breaks turned into br tags. So markup typed
+            into the plain value appears in the message as text rather than as markup.
+        </caveat>
+        <caveat id="unknown-code">
+            A code no variable has renders as an empty string, with nothing to say the code was wrong.
+        </caveat>
+        <caveat id="no-formatting">
+            This directive takes no formatting at all. A parameter that is not in quotation marks runs
+            to the next space, so {{customVar code=my_code|escape}} looks for a variable whose code is
+            my_code|escape, finds none, and prints nothing.
+        </caveat>
+    </variable>
+
+    <variable kind="trans" expression="" outputKind="text">
+        <title>The {{trans}} directive</title>
+        <summary>
+            Prints a piece of text in the language of the store view the message is sent in.
+        </summary>
+        <origin kind="directive" locator="Magento\Email\Model\Template\Filter::transDirective">
+            The quoted text is looked up in the translations for the store view the message is sent
+            in and printed. Parameters written after it fill the placeholders in the text: a parameter
+            named var fills %var.
+        </origin>
+        <affordance kind="instruction" label="How to change the wording">
+            <step id="edit">
+                The text between the quotation marks is both what is printed and the key the
+                translation is looked up by. Changing it means any translation of the old wording no
+                longer applies to it.
+            </step>
+            <step id="translate">
+                Translations come from the language pack of the store view's locale. Add or change the
+                row for this text there, then flush the translation cache.
+            </step>
+        </affordance>
+        <caveat id="must-be-quoted">
+            The text has to be in quotation marks. When it is not, or the closing quotation mark is
+            missing, the directive prints nothing at all rather than printing the text as written.
+        </caveat>
+        <caveat id="vertical-bar-in-the-text">
+            Everything after the first vertical bar inside the directive is read as formatting, so a
+            message that contains a vertical bar of its own is cut in half - the remaining fragment
+            has no closing quotation mark and the directive prints nothing.
+        </caveat>
+        <caveat id="escaped-by-default">
+            Like {{var}}, a {{trans}} directive with no vertical bar in it is escaped as HTML, and any
+            formatting name that is not escape or nl2br switches that off without a word.
+        </caveat>
+        <caveat id="untranslated">
+            When no translation exists for the store view's language the text is printed exactly as it
+            was written, so an untranslated string and a missing dictionary look the same.
+        </caveat>
+        <caveat id="placeholders-stay-unfilled-here">
+            The value shown above is the translated text with its placeholders left standing. What
+            fills them is supplied by the code that sends the message, not by the directive, so a
+            recipient sees a value in each place where a per cent sign and a name appear here.
+        </caveat>
+    </variable>
+
+    <variable kind="block" expression="" outputKind="html">
+        <title>The {{block}} directive</title>
+        <summary>Renders a block of the storefront inside the message and prints its markup.</summary>
+        <origin kind="directive" locator="Magento\Email\Model\Template\Filter::blockDirective">
+            The class parameter names a block class to create, or the id parameter names a CMS block
+            by its identifier. Every other parameter is set on the block as data before it is rendered,
+            so a block can be told what to show.
+        </origin>
+        <affordance kind="instruction" label="How to change what it renders">
+            <step id="template">
+                What the block prints comes from its own template file. To change it, override that
+                template in your theme rather than editing anything here.
+            </step>
+            <step id="parameters">
+                To change what the block is given, change the parameters on the directive; each one is
+                handed to the block as data under its own name.
+            </step>
+        </affordance>
+        <caveat id="nothing-named">
+            With neither a class nor an id parameter the directive prints nothing.
+        </caveat>
+        <caveat id="output-method">
+            The output parameter names the method to call on the block. When it names a method the
+            block does not have, the block is rendered normally instead, so a mistyped method name
+            fails quietly.
+        </caveat>
+    </variable>
+
+    <variable kind="layout" expression="" outputKind="html">
+        <title>The {{layout}} directive</title>
+        <summary>
+            Builds a layout handle and prints the markup of the outermost block it produces.
+        </summary>
+        <origin kind="directive" locator="Magento\Email\Model\Template\Filter::layoutDirective">
+            The handle parameter names the layout handle to load. Any other parameter, apart from
+            area, is set as data on every block the handle produces.
+        </origin>
+        <affordance kind="instruction" label="How to change what it renders">
+            <step id="handle">
+                What the handle produces is decided by the layout XML files that declare it. Add or
+                override that layout XML in your theme or module.
+            </step>
+            <step id="area">
+                The area parameter decides which area the layout is built in. Leaving it out builds
+                the frontend layout, which is what a message normally wants.
+            </step>
+        </affordance>
+        <caveat id="whole-layout">
+            The directive builds a complete layout for the handle, not a single block, so it is
+            considerably more expensive to render than {{block}} and prints only the outermost block
+            that comes out of it.
+        </caveat>
+    </variable>
+
+    <variable kind="media" expression="" outputKind="url">
+        <title>The {{media}} directive</title>
+        <summary>Prints the address of a file kept in the media directory.</summary>
+        <origin kind="directive" locator="Magento\Email\Model\Template\Filter::mediaDirective">
+            The value of the url parameter is appended to the media base address of the store view the
+            message is sent in. HTML entities in the parameter are decoded first, so an address
+            written with &amp;amp; in it still comes out correct.
+        </origin>
+        <affordance kind="instruction" label="How to change the file">
+            <step id="upload">
+                Put the file in the media directory - through the media gallery, or on the server -
+                and write its path, relative to that directory, in the url parameter.
+            </step>
+        </affordance>
+        <caveat id="not-checked">
+            The address is assembled from the text it is given and the file is never looked for, so a
+            path with a typo in it produces a link that leads nowhere rather than an error.
+        </caveat>
+    </variable>
+
+    <variable kind="store" expression="" outputKind="url">
+        <title>The {{store}} directive</title>
+        <summary>
+            Prints an address on the storefront of the store view the message is sent in.
+        </summary>
+        <origin kind="directive" locator="Magento\Email\Model\Template\Filter::storeDirective">
+            The url parameter is the path the address is built for; an empty one gives the home page.
+            A direct_url parameter is used as the path without any routing. Parameters whose name
+            starts with _query_ become query-string parameters of the result.
+        </origin>
+        <affordance kind="instruction" label="How to change where it points">
+            <step id="path">
+                Change the url parameter to the path you want; it is written the way a storefront
+                route is, without a leading slash.
+            </step>
+            <step id="query">
+                To add something to the query string, add a parameter named _query_ followed by the
+                name it should have, for instance _query_utm_source.
+            </step>
+        </affordance>
+        <caveat id="store-scope">
+            The address is built for the store view the message is sent in, so the same directive
+            produces different addresses in different store views.
+        </caveat>
+    </variable>
+
+    <variable kind="protocol" expression="" outputKind="text">
+        <title>The {{protocol}} directive</title>
+        <summary>
+            Prints http or https, whichever the store view is currently being served over, or a
+            complete address using it.
+        </summary>
+        <origin kind="directive" locator="Magento\Email\Model\Template\Filter::protocolDirective">
+            With no parameters the directive prints just the scheme. With a url parameter it prints
+            the scheme, then ://, then the parameter. With both an http and an https parameter it
+            prints whichever of the two matches. A store parameter chooses which store view to ask.
+        </origin>
+        <affordance kind="link" label="Open Web configuration" route="adminhtml/system_config/edit"
+                    scopeAware="true">
+            <param name="section">web</param>
+        </affordance>
+        <caveat id="pair-is-validated">
+            When both an http and an https parameter are given, each really has to begin with its own
+            scheme. If either does not, sending the message fails with an error instead of falling
+            back to the other one.
+        </caveat>
+        <caveat id="unknown-store">
+            A store parameter naming a store view that does not exist stops the message with an error
+            rather than falling back to the current one.
+        </caveat>
+    </variable>
+
+    <variable kind="css" expression="" outputKind="text">
+        <title>The {{css}} directive</title>
+        <summary>
+            Puts the contents of a stylesheet from the theme into the message, where the directive
+            stands.
+        </summary>
+        <origin kind="directive" locator="Magento\Email\Model\Template\Filter::cssDirective">
+            The file parameter names a file below the theme's web directory, or a file belonging to a
+            module written as Magento_Sales::css/name.css. The file is compiled and its result
+            replaces the directive.
+        </origin>
+        <affordance kind="instruction" label="How to change the stylesheet">
+            <step id="copy">
+                Copy the stylesheet into your own theme, under web/css/ in the theme directory.
+            </step>
+            <step id="edit">
+                Edit the copy. A file in the theme takes precedence over the one the theme inherits.
+            </step>
+            <step id="deploy">
+                Deploy static content so the change reaches the next message that is sent.
+            </step>
+        </affordance>
+        <caveat id="plain-text">
+            In a plain-text template the directive produces nothing at all.
+        </caveat>
+        <caveat id="failure-is-a-comment">
+            When the file is missing, fails to compile, or compiles to nothing, the directive leaves a
+            CSS comment in the message rather than reporting an error, so the message still sends and
+            simply arrives unstyled.
+        </caveat>
+        <caveat id="file-parameter">
+            Without a file parameter the directive leaves a CSS comment saying so, in the message
+            itself.
+        </caveat>
+    </variable>
+
+    <variable kind="inlinecss" expression="" outputKind="text">
+        <title>The {{inlinecss}} directive</title>
+        <summary>
+            Applies a stylesheet to the message by writing the styles onto the elements themselves,
+            which is what mail programs that ignore a stylesheet need. It prints nothing where it
+            stands.
+        </summary>
+        <origin kind="directive" locator="Magento\Email\Model\Template\Filter::inlinecssDirective">
+            The file parameter names the stylesheet. The styles are applied once the whole message has
+            been assembled, because inlining has to see the finished document, so the directive itself
+            is replaced by nothing at the point where it is written.
+        </origin>
+        <affordance kind="instruction" label="How to change the stylesheet">
+            <step id="copy">
+                Copy the stylesheet into your own theme, under web/css/ in the theme directory, and
+                edit the copy.
+            </step>
+            <step id="deploy">
+                Deploy static content so the change reaches the next message that is sent.
+            </step>
+        </affordance>
+        <caveat id="plain-text">
+            In a plain-text template the directive does nothing at all.
+        </caveat>
+        <caveat id="handled-by-the-parent">
+            In a template that is included by another one, the directive is left alone and the
+            containing template deals with it, so moving it into a header or footer changes when it
+            takes effect but not what it does.
+        </caveat>
+        <caveat id="file-required">
+            Unlike {{css}}, a missing or empty file parameter stops the message with an error rather
+            than leaving a comment behind.
+        </caveat>
+    </variable>
+
+    <variable kind="template" expression="" outputKind="html">
+        <title>The {{template}} directive</title>
+        <summary>
+            Includes another email template, named indirectly by the configuration setting that holds
+            it.
+        </summary>
+        <origin kind="directive" locator="Magento\Framework\Filter\DirectiveProcessor\TemplateDirective">
+            The config_path parameter names a configuration path, and the value found there is the
+            template to include: a number when it is a template saved in the admin, or the code of one
+            shipped by a module. The included template is rendered with the same variables as the one
+            that includes it.
+        </origin>
+        <affordance kind="instruction" label="How to change what is included">
+            <step id="setting">
+                The parameter names a configuration setting rather than a template, so what is
+                included changes by changing that setting, not by editing the directive.
+            </step>
+            <step id="header-footer">
+                The header and footer of transactional messages are held at
+                design/email/header_template and design/email/footer_template, which are chosen per
+                store view in the design configuration.
+            </step>
+        </affordance>
+        <caveat id="error-text-is-printed">
+            When the config_path parameter is missing, the words {Error in template processing} are
+            printed into the message instead of the include failing.
+        </caveat>
+    </variable>
+
+    <variable kind="depend" expression="" outputKind="html">
+        <title>The {{depend}} directive</title>
+        <summary>
+            Keeps the text between it and its closing tag only when the variable it names has a value.
+        </summary>
+        <origin kind="directive" locator="Magento\Framework\Filter\DirectiveProcessor\DependDirective">
+            The name written after depend is read the same way a {{var}} path is. When it comes back
+            empty the whole block is left out; otherwise the text inside it is rendered normally.
+        </origin>
+        <affordance kind="instruction" label="How to change the condition">
+            <step id="name">
+                Change the variable named after depend. It is a plain variable path - the same one you
+                would write inside {{var}}.
+            </step>
+            <step id="close">
+                Every {{depend}} needs a matching {{/depend}}. Without one the block is not recognised
+                and the text around it is printed as written.
+            </step>
+        </affordance>
+        <caveat id="no-comparison">
+            There is no comparison here. The only question asked is whether the value is empty, so the
+            directive cannot test a value against another value.
+        </caveat>
+        <caveat id="does-not-nest">
+            The block ends at the first {{/depend}} that follows it, so writing one {{depend}} inside
+            another does not nest: the outer block ends at the inner one's closing tag and the
+            remaining closing tag is left in the message.
+        </caveat>
+    </variable>
+
+    <variable kind="if" expression="" outputKind="html">
+        <title>The {{if}} directive</title>
+        <summary>
+            Chooses between two pieces of text according to whether the variable it names has a value.
+        </summary>
+        <origin kind="directive" locator="Magento\Framework\Filter\DirectiveProcessor\IfDirective">
+            The name written after if is read the same way a {{var}} path is. When it has a value the
+            text up to {{else}} is rendered; when it is empty the text after {{else}} is rendered, and
+            nothing at all if there is no {{else}}.
+        </origin>
+        <affordance kind="instruction" label="How to change the condition">
+            <step id="name">
+                Change the variable named after if. It is a plain variable path - the same one you
+                would write inside {{var}}.
+            </step>
+            <step id="close">
+                Every {{if}} needs a matching {{/if}}; {{else}} between the two is optional and may
+                appear once.
+            </step>
+        </affordance>
+        <caveat id="no-comparison">
+            There is no comparison and there is no chain of conditions. The only question asked is
+            whether the value is empty, and there is no way to write "otherwise, if".
+        </caveat>
+        <caveat id="does-not-nest">
+            The block ends at the first {{/if}} that follows it, so one {{if}} written inside another
+            does not nest.
+        </caveat>
+    </variable>
+
+    <variable kind="for" expression="" outputKind="html">
+        <title>The {{for}} directive</title>
+        <summary>
+            Repeats the text between it and its closing tag once for every item of a list, such as the
+            lines of an order.
+        </summary>
+        <origin kind="directive" locator="Magento\Framework\Filter\DirectiveProcessor\ForDirective">
+            It is written {{for item in order.items}}. The name before in is the name each item takes
+            inside the block; the name after in is read the same way a {{var}} path is and has to come
+            back as a list.
+        </origin>
+        <affordance kind="instruction" label="How to change what it repeats over">
+            <step id="list">
+                Change the name after in to another variable that holds a list. If it does not hold
+                one, nothing is repeated.
+            </step>
+            <step id="item">
+                Inside the block, write the name before in followed by a full stop and the value you
+                want, for instance {{var item.name}}.
+            </step>
+        </affordance>
+        <caveat id="not-a-list">
+            When the name after in does not come back as a list, the directive is left in the message
+            exactly as it was written, closing tag and all.
+        </caveat>
+        <caveat id="no-formatting-inside">
+            Inside the block, everything between the braces is read as a variable path and nothing
+            else. A vertical bar becomes part of the name, so {{var item.name|escape}} matches nothing
+            and prints an empty string - and, more seriously, values printed inside the block are not
+            escaped the way the same directive outside the block would be.
+        </caveat>
+        <caveat id="no-directives-inside">
+            Only variable paths are expanded inside the block. A {{depend}} or an {{if}} written inside
+            it is not treated as a directive.
+        </caveat>
+        <caveat id="loop-counter">
+            A counter is available inside the block: {{var loop.index}} gives the position of the
+            current item, counting from zero.
+        </caveat>
+    </variable>
+
+    <variable kind="view" expression="" outputKind="url">
+        <title>The {{view}} directive</title>
+        <summary>
+            Prints the address of a static file belonging to a theme or a module, such as an image.
+        </summary>
+        <origin kind="directive" locator="Magento\Email\Model\Template\Filter::viewDirective">
+            The url parameter names the file and the directive prints the address it has been
+            published at for the theme the message is rendered with.
+        </origin>
+        <affordance kind="instruction" label="How to change the file">
+            <step id="theme">
+                A file belonging to the theme is written relative to the theme's web directory, for
+                instance images/logo.png, and is replaced by putting your own copy at the same place
+                in your theme.
+            </step>
+            <step id="module">
+                A file belonging to a module has to be written with the module in front of it, as
+                Magento_Sales::images/logo.png. Without that part it is looked for in the theme.
+            </step>
+            <step id="deploy">
+                Deploy static content after replacing a file, so the published copy the address points
+                at is the new one.
+            </step>
+        </affordance>
+        <caveat id="address-not-contents">
+            The directive prints an address, never the file itself, so it belongs in the src attribute
+            of an image rather than in the body of the message.
+        </caveat>
+    </variable>
+
+    <variable kind="config" expression="general/store_information/country_id" outputKind="text">
+        <title>Store country</title>
+        <summary>The name of the country in the store's own address.</summary>
+        <origin kind="config" locator="general/store_information/country_id">
+            Stored in the configuration under Stores &gt; Configuration &gt; General &gt; General &gt;
+            Store Information as the Country setting, which holds a country code rather than a name.
+            Magento\Email\Model\Template\Filter::configDirective replaces that code with the country's
+            name before printing it.
+        </origin>
+        <affordance kind="link" label="Open Store Information" route="adminhtml/system_config/edit"
+                    scopeAware="true">
+            <param name="section">general</param>
+            <fragment>general_store_information-link</fragment>
+        </affordance>
+        <caveat id="rendered-differs-from-stored">
+            What the message shows is not what is stored. The setting holds a country code and the
+            message shows the country's name, so the two never look alike and the printed value cannot
+            be typed back into the setting.
+        </caveat>
+        <caveat id="empty-when-unset">
+            When no country is chosen the directive prints nothing at all, rather than printing a code
+            or leaving the directive visible.
+        </caveat>
+        <caveat id="scope">
+            The Country setting is offered at the default and website scopes only. Every store view of
+            a website therefore shows the same country, whatever the scope switcher in this editor is
+            set to.
+        </caveat>
+    </variable>
+
+    <variable kind="config" expression="general/store_information/region_id" outputKind="text">
+        <title>Store region or state</title>
+        <summary>The region or state in the store's own address.</summary>
+        <origin kind="config" locator="general/store_information/region_id">
+            Stored in the configuration under Stores &gt; Configuration &gt; General &gt; General &gt;
+            Store Information as the Region/State setting, which accepts free text.
+            Magento\Email\Model\Template\Filter::configDirective replaces the stored value with a
+            region's name when it matches a region record, and prints it unchanged when it does not.
+        </origin>
+        <affordance kind="link" label="Open Store Information" route="adminhtml/system_config/edit"
+                    scopeAware="true">
+            <param name="section">general</param>
+            <fragment>general_store_information-link</fragment>
+        </affordance>
+        <caveat id="rendered-differs-from-stored">
+            What the message shows is not reliably what is stored: a value that matches a region
+            record is replaced by that region's name, and one that does not is printed as it was
+            typed. Which of the two happened is not visible from the message.
+        </caveat>
+        <caveat id="address-block-disagrees">
+            The formatted store address block is stricter than this directive. It shows the region only
+            when the stored value matches a region record, so free text that matches none is printed
+            here and yet missing from the address block.
+        </caveat>
+        <caveat id="scope">
+            The Region/State setting is offered at the default and website scopes only, so every store
+            view of a website shows the same region.
+        </caveat>
+    </variable>
+
+    <variable kind="var" expression="store.formatted_address" outputKind="html">
+        <title>Store address block</title>
+        <summary>The store's own postal address, already laid out over several lines.</summary>
+        <origin kind="computed" locator="Magento\Store\Model\Store::getFormattedAddress">
+            Magento\Email\Model\AbstractTemplate works the address out before the message is rendered
+            and puts it on the store object under formatted_address. It is built by
+            Magento\Store\Model\Information from the Store Information configuration group, laid out
+            with the fixed five-line template in Magento\Store\Model\Address\Renderer, and its line
+            breaks are then turned into br tags.
+        </origin>
+        <affordance kind="link" label="Open Store Information" route="adminhtml/system_config/edit"
+                    scopeAware="true">
+            <param name="section">general</param>
+            <fragment>general_store_information-link</fragment>
+        </affordance>
+        <caveat id="contains-markup">
+            The value contains br tags. With no formatting the directive escapes them and they appear
+            in the message as text, which is why this one is normally written with the raw idiom.
+        </caveat>
+        <caveat id="layout-is-fixed">
+            The layout of the block is fixed in Magento and is not chosen per country. Changing it
+            means replacing the address renderer's template in code; nothing in the admin does it.
+        </caveat>
+        <caveat id="blank-lines">
+            The name, the first street line, the region and the country are printed whether or not
+            they are set, so an unfilled one leaves a blank line. The second street line, the city and
+            the postcode are left out when they are empty.
+        </caveat>
+        <caveat id="country-and-region-are-names">
+            The last line is the country's name, not its code, and it is empty when no country is set.
+            The region appears only when the Region/State setting matches a region record.
+        </caveat>
+    </variable>
+
+    <variable kind="var" expression="store.getFormattedAddress()" outputKind="html">
+        <title>Store address block, written as a method call</title>
+        <summary>The store's own postal address, already laid out over several lines.</summary>
+        <origin kind="computed" locator="Magento\Store\Model\Store::getFormattedAddress">
+            The brackets are not a method call: the path is read as a request for the formatted_address
+            value held on the store object, which Magento\Email\Model\AbstractTemplate puts there
+            before the message is rendered. It is built by Magento\Store\Model\Information from the
+            Store Information configuration group, laid out with the fixed five-line template in
+            Magento\Store\Model\Address\Renderer, and its line breaks are then turned into br tags.
+        </origin>
+        <affordance kind="link" label="Open Store Information" route="adminhtml/system_config/edit"
+                    scopeAware="true">
+            <param name="section">general</param>
+            <fragment>general_store_information-link</fragment>
+        </affordance>
+        <caveat id="same-as-the-property">
+            {{var store.formatted_address}} prints exactly the same thing. Both spellings are read as
+            the same value, and neither is more correct than the other.
+        </caveat>
+        <caveat id="contains-markup">
+            The value contains br tags. With no formatting the directive escapes them and they appear
+            in the message as text, which is why this one is normally written with the raw idiom.
+        </caveat>
+        <caveat id="layout-is-fixed">
+            The layout of the block is fixed in Magento and is not chosen per country. Changing it
+            means replacing the address renderer's template in code; nothing in the admin does it.
+        </caveat>
+        <caveat id="blank-lines">
+            The name, the first street line, the region and the country are printed whether or not
+            they are set, so an unfilled one leaves a blank line. The second street line, the city and
+            the postcode are left out when they are empty.
+        </caveat>
+    </variable>
+
+    <variable kind="var" expression="store.frontend_name" outputKind="text">
+        <title>Store name</title>
+        <summary>The name of the store the message is sent for, as customers are meant to see it.</summary>
+        <origin kind="computed" locator="Magento\Store\Model\Store::getFrontendName">
+            Magento\Email\Model\AbstractTemplate puts it on the store object under frontend_name before
+            the message is rendered. Magento\Store\Model\Store::getFrontendName reads the Store Name
+            setting of the Store Information configuration group, and falls back to the name of the
+            store the store view belongs to when that setting is empty.
+        </origin>
+        <affordance kind="link" label="Open Store Information" route="adminhtml/system_config/edit"
+                    scopeAware="true">
+            <param name="section">general</param>
+            <fragment>general_store_information-link</fragment>
+        </affordance>
+        <caveat id="fallback-hides-an-empty-setting">
+            Clearing the Store Name setting does not empty this. When the setting has no value the name
+            of the store the store view belongs to is printed instead, which is why a name often
+            survives being deleted.
+        </caveat>
+        <caveat id="not-the-store-view-name">
+            This is not the name a store view is listed under in Stores &gt; All Stores. It is the
+            Store Name configuration setting, with the store's name as a fallback, and the two are
+            edited in different places.
+        </caveat>
+    </variable>
+
+    <variable kind="var" expression="store.getFrontendName()" outputKind="text">
+        <title>Store name, written as a method call</title>
+        <summary>The name of the store the message is sent for, as customers are meant to see it.</summary>
+        <origin kind="computed" locator="Magento\Store\Model\Store::getFrontendName">
+            The brackets are not a method call: the path is read as a request for the frontend_name
+            value held on the store object, which Magento\Email\Model\AbstractTemplate puts there
+            before the message is rendered. It comes from the Store Name setting of the Store
+            Information configuration group, falling back to the name of the store the store view
+            belongs to when that setting is empty.
+        </origin>
+        <affordance kind="link" label="Open Store Information" route="adminhtml/system_config/edit"
+                    scopeAware="true">
+            <param name="section">general</param>
+            <fragment>general_store_information-link</fragment>
+        </affordance>
+        <caveat id="same-as-the-property">
+            {{var store.frontend_name}} prints exactly the same thing. Both spellings are read as the
+            same value.
+        </caveat>
+        <caveat id="fallback-hides-an-empty-setting">
+            Clearing the Store Name setting does not empty this. When the setting has no value the name
+            of the store the store view belongs to is printed instead.
+        </caveat>
+    </variable>
+
+    <variable kind="var" expression="store.getBaseUrl()" outputKind="text">
+        <title>Store address of the shop, written as a method call</title>
+        <summary>
+            This does not print the address of the shop. On a standard installation it prints nothing
+            at all.
+        </summary>
+        <origin kind="computed" locator="Magento\Framework\Filter\VariableResolver\StrictResolver::resolve">
+            A path inside {{var}} is never a method call. getBaseUrl() is read as a request for a
+            base_url value held on the store object, and nothing puts one there while a message is
+            being rendered, so the path comes back empty.
+        </origin>
+        <affordance kind="instruction" label="What to write instead">
+            <step id="storefront-link">
+                For a link into the shop, write {{store url=""}}, which builds the address for the
+                store view the message is sent in. A path may be given instead of the empty string.
+            </step>
+            <step id="configured-address">
+                For the configured address itself, write {{config path="web/unsecure/base_url"}} or
+                {{config path="web/secure/base_url"}}.
+            </step>
+        </affordance>
+        <caveat id="fails-silently">
+            Nothing reports this. The directive is replaced by an empty string, so a link written
+            around it simply arrives with nothing in it.
+        </caveat>
+        <caveat id="true-of-other-methods">
+            The same is true of any other method spelled into a {{var}} path whose value nothing has
+            put on the object first. Only the values the sending code assigned can be read.
+        </caveat>
+    </variable>
+
+    <!--
+        Entries describing the variables the sending code assigns to one family of templates, and the
+        values that come from the design configuration, belong below this line.
+    -->
+
+    <!--
+        Values every message receives whichever family it belongs to. Magento\Email\Model\AbstractTemplate
+        adds them just before the template is filtered, and only where the sending code has not already
+        set a variable of that name.
+    -->
+    <variable kind="var" expression="store_email" outputKind="text">
+        <title>Store email address</title>
+        <summary>The address a message offers the recipient to write back to.</summary>
+        <origin kind="config" locator="trans_email/ident_support/email">
+            Magento\Email\Model\AbstractTemplate::addEmailVariables reads it from the configuration for
+            the store view the message is sent in. Despite the general-sounding name it reads the
+            Customer Support identity and nothing else.
+        </origin>
+        <affordance kind="link" label="Open Store Email Addresses" route="adminhtml/system_config/edit"
+                    scopeAware="true">
+            <param name="section">trans_email</param>
+            <fragment>trans_email_ident_support-link</fragment>
+        </affordance>
+        <caveat id="which-identity">
+            It is the Customer Support address. Changing the General Contact address, or the address a
+            particular kind of message is sent from, leaves this value untouched.
+        </caveat>
+        <caveat id="not-the-sender">
+            It is not necessarily the address the message was sent from. Which identity sends a message
+            is a separate setting on that message's own configuration page.
+        </caveat>
+    </variable>
+
+    <variable kind="var" expression="store_phone" outputKind="text">
+        <title>Store phone number</title>
+        <summary>The store's telephone number, as recorded in the store information.</summary>
+        <origin kind="config" locator="general/store_information/phone">
+            Magento\Email\Model\AbstractTemplate::addEmailVariables reads it from the configuration for
+            the store view the message is sent in.
+        </origin>
+        <affordance kind="link" label="Open Store Information" route="adminhtml/system_config/edit"
+                    scopeAware="true">
+            <param name="section">general</param>
+            <fragment>general_store_information-link</fragment>
+        </affordance>
+        <caveat id="guarded">
+            The shipped templates wrap it in a depend directive, because an unset phone number would
+            otherwise leave a sentence such as "or call us at" with nothing after it.
+        </caveat>
+    </variable>
+
+    <variable kind="var" expression="store_hours" outputKind="text">
+        <title>Store opening hours</title>
+        <summary>The store's opening hours, as recorded in the store information.</summary>
+        <origin kind="config" locator="general/store_information/hours">
+            Magento\Email\Model\AbstractTemplate::addEmailVariables reads it from the configuration for
+            the store view the message is sent in.
+        </origin>
+        <affordance kind="link" label="Open Store Information" route="adminhtml/system_config/edit"
+                    scopeAware="true">
+            <param name="section">general</param>
+            <fragment>general_store_information-link</fragment>
+        </affordance>
+        <caveat id="free-text">
+            The field is free text, so whatever is typed there is what the message prints.
+        </caveat>
+    </variable>
+
+    <!--
+        The order messages. Magento\Sales\Model\Order\Email\Sender\OrderSender::prepareTemplate builds
+        the set and hands it to Magento\Sales\Model\Order\Email\Container\Template, which the send
+        builder passes to the template. The order comment messages are built the same way by
+        Magento\Sales\Model\Order\Email\Sender\OrderCommentSender.
+    -->
+    <variable kind="var" expression="order" outputKind="text">
+        <title>The order</title>
+        <summary>The order the message is about.</summary>
+        <origin kind="template_var" locator="Magento\Sales\Model\Order\Email\Sender\OrderSender::prepareTemplate">
+            The sender puts the order record itself under this name. The invoice, shipment and credit
+            memo senders pass the same record under the same name, so the order messages and the
+            documents raised against an order all see it.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="find">
+                Open Sales &gt; Orders and find the order the message is about.
+            </step>
+            <step id="edit">
+                Change the order there. The message reports whatever the order says at the moment it
+                is sent; nothing in the template decides it.
+            </step>
+        </affordance>
+        <caveat id="absence">
+            The sending code decides which variables a message receives, so a name assigned to one
+            family of messages does not exist in another. An unassigned name is not an error:
+            Magento\Email\Model\Template\Filter::varDirective asks for the variable with an empty
+            string as its fallback, so the directive quietly produces nothing at all.
+        </caveat>
+        <caveat id="not-text">
+            This is the order record rather than a piece of text. A template reads a field from it, as
+            in order.increment_id, or passes it to another directive as $order.
+        </caveat>
+    </variable>
+
+    <variable kind="var" expression="order.increment_id" outputKind="text">
+        <title>Order number</title>
+        <summary>The order number the customer sees, such as 000000123.</summary>
+        <origin kind="template_var" locator="Magento\Sales\Model\Order\Email\Sender\OrderSender::prepareTemplate">
+            Read from the order record the sender assigns. The invoice, shipment and credit memo
+            messages carry the same order record, so the order number is available in those too.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="fixed">
+                The number is issued by the store's own numbering sequence when the order is placed, and
+                cannot be edited afterwards.
+            </step>
+            <step id="find">
+                Open Sales &gt; Orders to find the order this number belongs to.
+            </step>
+        </affordance>
+    </variable>
+
+    <variable kind="var" expression="order_id" outputKind="number">
+        <title>Order record id</title>
+        <summary>The database identifier of the order.</summary>
+        <origin kind="template_var" locator="Magento\Sales\Model\Order\Email\Sender\OrderSender::prepareTemplate">
+            The sender assigns the order's own primary key alongside the order record.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="fixed">
+                The identifier is assigned by the database when the order is created and never changes.
+            </step>
+            <step id="use-increment">
+                Print order.increment_id instead when the message should show the customer their order
+                number.
+            </step>
+        </affordance>
+        <caveat id="not-a-number-the-customer-knows">
+            This is not the order number on the customer's confirmation. It is an internal key and
+            means nothing to a recipient.
+        </caveat>
+    </variable>
+
+    <variable kind="var" expression="order.shipping_description" outputKind="text">
+        <title>Shipping method description</title>
+        <summary>The shipping method the customer chose, as it was worded when the order was placed.</summary>
+        <origin kind="template_var" locator="Magento\Sales\Model\Order\Email\Sender\OrderSender::prepareTemplate">
+            Read from the order record the sender assigns. The wording is stored on the order at the
+            time of purchase rather than looked up when the message is sent.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="stored">
+                The description already on an existing order cannot be changed from the template.
+            </step>
+            <step id="future">
+                To change what future orders record, adjust the carrier's method titles under Stores
+                &gt; Configuration &gt; Sales &gt; Delivery Methods.
+            </step>
+        </affordance>
+        <caveat id="virtual">
+            An order with nothing to ship has no shipping method, so the value is empty.
+        </caveat>
+    </variable>
+
+    <variable kind="var" expression="order_data.customer_name" outputKind="text">
+        <title>Customer name on the order</title>
+        <summary>The name of the person who placed the order.</summary>
+        <origin kind="template_var" locator="Magento\Sales\Model\Order\Email\Sender\OrderSender::prepareTemplate">
+            The sender calls getCustomerName() on the order and files the result under order_data. Every
+            sales sender assembles the same order_data group, so the order, invoice, shipment and credit
+            memo messages all carry it.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="order">
+                Open Sales &gt; Orders, open the order, and change the name on the billing address.
+            </step>
+            <step id="account">
+                For a registered customer, changing the name on the account under Customers &gt; All
+                Customers affects future orders, not orders already placed.
+            </step>
+        </affordance>
+    </variable>
+
+    <variable kind="var" expression="order_data.frontend_status_label" outputKind="text">
+        <title>Order status label</title>
+        <summary>The status of the order in the wording shown to customers.</summary>
+        <origin kind="template_var" locator="Magento\Sales\Model\Order\Email\Sender\OrderSender::prepareTemplate">
+            The sender calls getFrontendStatusLabel() on the order. That is the customer-facing label of
+            the status rather than its internal code, and the two can differ.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="labels">
+                Open Stores &gt; Order Status to rename a status as customers see it.
+            </step>
+            <step id="order">
+                To change which status an order is in, open it under Sales &gt; Orders.
+            </step>
+        </affordance>
+        <caveat id="update-only">
+            Only the update and comment messages declare it. The confirmation message is sent when the
+            order is placed, before any status change worth reporting.
+        </caveat>
+    </variable>
+
+    <variable kind="var" expression="order_data.email_customer_note" outputKind="text">
+        <title>Note to the customer</title>
+        <summary>The note an administrator wrote for the customer when the order was placed or edited.</summary>
+        <origin kind="template_var" locator="Magento\Sales\Model\Order\Email\Sender\OrderSender::prepareTemplate">
+            The sender calls getEmailCustomerNote() on the order and files the result under order_data.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="order">
+                Open Sales &gt; Orders, open the order, and edit the note that accompanies it.
+            </step>
+        </affordance>
+        <caveat id="usually-empty">
+            Most orders carry no such note, so the value is usually empty. The shipped template wraps it
+            in a depend directive for that reason.
+        </caveat>
+    </variable>
+
+    <variable kind="var" expression="order_data.is_not_virtual" outputKind="text">
+        <title>Order has something to ship</title>
+        <summary>A flag that is set when the order contains at least one item that needs delivering.</summary>
+        <origin kind="template_var" locator="Magento\Sales\Model\Order\Email\Sender\OrderSender::prepareTemplate">
+            The sender calls getIsNotVirtual() on the order, which is the negation of the order's virtual
+            flag, and files the result under order_data.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="products">
+                Whether an order is virtual follows from the products on it. Change the product types
+                under Catalog &gt; Products if future orders should be treated differently.
+            </step>
+        </affordance>
+        <caveat id="meant-for-depend">
+            It exists to be tested rather than printed. The shipped templates use it as the condition of
+            a depend directive around the shipping sections.
+        </caveat>
+    </variable>
+
+    <variable kind="var" expression="created_at_formatted" outputKind="date">
+        <title>Order date</title>
+        <summary>The date and time the order was placed, written out for reading.</summary>
+        <origin kind="template_var" locator="Magento\Sales\Model\Order\Email\Sender\OrderSender::prepareTemplate">
+            The sender calls getCreatedAtFormatted(2) on the order, which formats the date and the time
+            at medium length in the time zone configured for the order's store view.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="timezone">
+                The time zone comes from Stores &gt; Configuration &gt; General &gt; Locale Options for
+                the store view the order belongs to.
+            </step>
+            <step id="raw-field">
+                For a different wording, print a field of the order itself instead of this prepared
+                string.
+            </step>
+        </affordance>
+        <caveat id="order-only">
+            Only the order sender prepares it. The invoice, shipment and credit memo senders do not, so
+            in those messages it produces nothing.
+        </caveat>
+    </variable>
+
+    <variable kind="var" expression="shipping_msg" outputKind="text">
+        <title>Shipping message</title>
+        <summary>An extra line about delivery, printed under the shipping method.</summary>
+        <origin kind="template_var" locator="Magento\Sales\Model\Order\Email\Sender\OrderSender::prepareTemplate">
+            The order confirmation template declares and prints this name, but no sender in Magento
+            assigns it. It exists for an extension or an observer of the
+            email_order_set_template_vars_before event to fill in.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="check">
+                Check whether any installed extension fills this name in. Nothing in Magento itself does.
+            </step>
+            <step id="remove">
+                If nothing fills it in, the directive can be removed from the template: it prints
+                nothing either way.
+            </step>
+        </affordance>
+        <caveat id="empty-by-default">
+            On a stock installation it is always empty, which is why the shipped template guards it with
+            an if directive.
+        </caveat>
+    </variable>
+
+    <variable kind="var" expression="formattedBillingAddress" outputKind="html">
+        <title>Billing address block</title>
+        <summary>The order's billing address, laid out ready to print.</summary>
+        <origin kind="template_var" locator="Magento\Sales\Model\Order\Address\Renderer::format">
+            Every sales sender renders the order's billing address through the address renderer in its
+            html layout and assigns the result under this name.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="address">
+                To change the address itself, open the order under Sales &gt; Orders and edit its
+                billing address.
+            </step>
+            <step id="layout">
+                To change how any address is laid out, open Stores &gt; Configuration &gt; Customers
+                &gt; Customer Configuration &gt; Address Templates and edit the HTML template.
+            </step>
+        </affordance>
+        <caveat id="contains-markup">
+            The html layout puts line breaks and a telephone link into the value, so a directive that
+            escapes it shows the tags as text. The shipped templates print it with the raw idiom.
+        </caveat>
+    </variable>
+
+    <variable kind="var" expression="formattedShippingAddress" outputKind="html">
+        <title>Shipping address block</title>
+        <summary>The order's delivery address, laid out ready to print.</summary>
+        <origin kind="template_var" locator="Magento\Sales\Model\Order\Address\Renderer::format">
+            Every sales sender renders the order's shipping address through the address renderer in its
+            html layout and assigns the result under this name.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="address">
+                To change the address itself, open the order under Sales &gt; Orders and edit its
+                shipping address.
+            </step>
+            <step id="layout">
+                To change how any address is laid out, open Stores &gt; Configuration &gt; Customers
+                &gt; Customer Configuration &gt; Address Templates and edit the HTML template.
+            </step>
+        </affordance>
+        <caveat id="virtual">
+            An order with nothing to ship has no shipping address, and the senders assign nothing at
+            all in that case, so the value is empty.
+        </caveat>
+        <caveat id="contains-markup">
+            The html layout puts line breaks and a telephone link into the value, so a directive that
+            escapes it shows the tags as text. The shipped templates print it with the raw idiom.
+        </caveat>
+    </variable>
+
+    <variable kind="var" expression="payment_html" outputKind="html">
+        <title>Payment details block</title>
+        <summary>The payment method's own summary of how the order was paid for.</summary>
+        <origin kind="template_var" locator="Magento\Payment\Helper\Data::getInfoBlockHtml">
+            The order, invoice, shipment and credit memo senders ask the payment helper to render the
+            payment method's information block for the order's store view, and assign the rendered
+            block under this name.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="method">
+                What appears here is decided by the payment method. Its title comes from Stores &gt;
+                Configuration &gt; Sales &gt; Payment Methods.
+            </step>
+            <step id="theme">
+                For a different layout, override the payment method's information template in your own
+                theme.
+            </step>
+        </affordance>
+        <caveat id="contains-markup">
+            The value is a rendered block of markup, so a directive that escapes it shows the tags as
+            text. The shipped templates print it with the raw idiom.
+        </caveat>
+    </variable>
+
+    <variable kind="var" expression="comment" outputKind="text">
+        <title>Comment sent with the document</title>
+        <summary>The comment an administrator chose to send to the customer with this document.</summary>
+        <origin kind="template_var" locator="Magento\Sales\Model\Order\Email\Sender\InvoiceSender::send">
+            The invoice, shipment and credit memo senders assign the document's customer note here, but
+            only when the note was marked for sending; otherwise they assign an empty string. The order,
+            invoice, shipment and credit memo comment senders assign the comment being sent directly.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="document">
+                Open the order under Sales &gt; Orders and add or edit the comment on the invoice,
+                shipment or credit memo you are sending.
+            </step>
+            <step id="notify">
+                Tick the option that notifies the customer. Without it the senders assign an empty
+                string and the message shows no comment.
+            </step>
+        </affordance>
+        <caveat id="notify-flag">
+            A comment that exists but was not marked for sending arrives as an empty value rather than
+            as the comment.
+        </caveat>
+        <caveat id="line-breaks">
+            The shipped templates print it escaped and then turn its line breaks into markup, so what
+            the administrator typed is shown as text and its paragraphs survive.
+        </caveat>
+    </variable>
+
+    <!--
+        The invoice messages. Magento\Sales\Model\Order\Email\Sender\InvoiceSender::send assembles the
+        set; the comment messages are assembled the same way by InvoiceCommentSender.
+    -->
+    <variable kind="var" expression="invoice" outputKind="text">
+        <title>The invoice</title>
+        <summary>The invoice the message is about.</summary>
+        <origin kind="template_var" locator="Magento\Sales\Model\Order\Email\Sender\InvoiceSender::send">
+            The sender puts the invoice record itself under this name, beside the order it belongs to.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="find">
+                Open Sales &gt; Invoices and find the invoice the message is about.
+            </step>
+            <step id="edit">
+                The message reports whatever the invoice says at the moment it is sent; nothing in the
+                template decides it.
+            </step>
+        </affordance>
+        <caveat id="absence">
+            The sending code decides which variables a message receives, so a name assigned to the
+            invoice messages does not exist in another family. An unassigned name is not an error:
+            Magento\Email\Model\Template\Filter::varDirective asks for the variable with an empty
+            string as its fallback, so the directive quietly produces nothing at all.
+        </caveat>
+        <caveat id="not-text">
+            This is the invoice record rather than a piece of text. A template reads a field from it, as
+            in invoice.increment_id, or passes it to another directive as $invoice.
+        </caveat>
+    </variable>
+
+    <variable kind="var" expression="invoice.increment_id" outputKind="text">
+        <title>Invoice number</title>
+        <summary>The invoice number the customer sees.</summary>
+        <origin kind="template_var" locator="Magento\Sales\Model\Order\Email\Sender\InvoiceSender::send">
+            Read from the invoice record the sender assigns.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="fixed">
+                The number is issued when the invoice is raised and cannot be edited afterwards.
+            </step>
+        </affordance>
+    </variable>
+
+    <variable kind="var" expression="invoice_id" outputKind="number">
+        <title>Invoice record id</title>
+        <summary>The database identifier of the invoice.</summary>
+        <origin kind="template_var" locator="Magento\Sales\Model\Order\Email\Sender\InvoiceSender::send">
+            The sender assigns the invoice's own primary key alongside the invoice record.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="fixed">
+                The identifier is assigned by the database when the invoice is created and never
+                changes.
+            </step>
+            <step id="use-increment">
+                Print invoice.increment_id instead when the message should show the customer their
+                invoice number.
+            </step>
+        </affordance>
+        <caveat id="internal">
+            It is an internal key and means nothing to a recipient. The shipped template passes it to
+            the items grid rather than printing it.
+        </caveat>
+    </variable>
+
+    <!--
+        The shipment messages. Magento\Sales\Model\Order\Email\Sender\ShipmentSender::send assembles the
+        set; the comment messages are assembled the same way by ShipmentCommentSender.
+    -->
+    <variable kind="var" expression="shipment" outputKind="text">
+        <title>The shipment</title>
+        <summary>The shipment the message is about.</summary>
+        <origin kind="template_var" locator="Magento\Sales\Model\Order\Email\Sender\ShipmentSender::send">
+            The sender puts the shipment record itself under this name, beside the order it belongs to.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="find">
+                Open Sales &gt; Shipments and find the shipment the message is about.
+            </step>
+            <step id="edit">
+                The message reports whatever the shipment says at the moment it is sent, including its
+                tracking numbers; nothing in the template decides it.
+            </step>
+        </affordance>
+        <caveat id="absence">
+            The sending code decides which variables a message receives, so a name assigned to the
+            shipment messages does not exist in another family. An unassigned name is not an error:
+            Magento\Email\Model\Template\Filter::varDirective asks for the variable with an empty
+            string as its fallback, so the directive quietly produces nothing at all.
+        </caveat>
+        <caveat id="not-text">
+            This is the shipment record rather than a piece of text. A template reads a field from it,
+            as in shipment.increment_id, or passes it to another directive as $shipment.
+        </caveat>
+    </variable>
+
+    <variable kind="var" expression="shipment.increment_id" outputKind="text">
+        <title>Shipment number</title>
+        <summary>The shipment number the customer sees.</summary>
+        <origin kind="template_var" locator="Magento\Sales\Model\Order\Email\Sender\ShipmentSender::send">
+            Read from the shipment record the sender assigns.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="fixed">
+                The number is issued when the shipment is created and cannot be edited afterwards.
+            </step>
+        </affordance>
+    </variable>
+
+    <variable kind="var" expression="shipment_id" outputKind="number">
+        <title>Shipment record id</title>
+        <summary>The database identifier of the shipment.</summary>
+        <origin kind="template_var" locator="Magento\Sales\Model\Order\Email\Sender\ShipmentSender::send">
+            The sender assigns the shipment's own primary key alongside the shipment record.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="fixed">
+                The identifier is assigned by the database when the shipment is created and never
+                changes.
+            </step>
+            <step id="use-increment">
+                Print shipment.increment_id instead when the message should show the customer their
+                shipment number.
+            </step>
+        </affordance>
+        <caveat id="internal">
+            It is an internal key and means nothing to a recipient.
+        </caveat>
+    </variable>
+
+    <!--
+        The credit memo messages. Magento\Sales\Model\Order\Email\Sender\CreditmemoSender::send assembles
+        the set; the comment messages are assembled the same way by CreditmemoCommentSender.
+    -->
+    <variable kind="var" expression="creditmemo" outputKind="text">
+        <title>The credit memo</title>
+        <summary>The credit memo the message is about.</summary>
+        <origin kind="template_var" locator="Magento\Sales\Model\Order\Email\Sender\CreditmemoSender::send">
+            The sender puts the credit memo record itself under this name, beside the order it belongs
+            to.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="find">
+                Open Sales &gt; Credit Memos and find the credit memo the message is about.
+            </step>
+            <step id="edit">
+                The message reports whatever the credit memo says at the moment it is sent; nothing in
+                the template decides it.
+            </step>
+        </affordance>
+        <caveat id="absence">
+            The sending code decides which variables a message receives, so a name assigned to the
+            credit memo messages does not exist in another family. An unassigned name is not an error:
+            Magento\Email\Model\Template\Filter::varDirective asks for the variable with an empty
+            string as its fallback, so the directive quietly produces nothing at all.
+        </caveat>
+        <caveat id="not-text">
+            This is the credit memo record rather than a piece of text. A template reads a field from
+            it, as in creditmemo.increment_id, or passes it to another directive as $creditmemo.
+        </caveat>
+    </variable>
+
+    <variable kind="var" expression="creditmemo.increment_id" outputKind="text">
+        <title>Credit memo number</title>
+        <summary>The credit memo number the customer sees.</summary>
+        <origin kind="template_var" locator="Magento\Sales\Model\Order\Email\Sender\CreditmemoSender::send">
+            Read from the credit memo record the sender assigns.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="fixed">
+                The number is issued when the credit memo is raised and cannot be edited afterwards.
+            </step>
+        </affordance>
+    </variable>
+
+    <variable kind="var" expression="creditmemo_id" outputKind="number">
+        <title>Credit memo record id</title>
+        <summary>The database identifier of the credit memo.</summary>
+        <origin kind="template_var" locator="Magento\Sales\Model\Order\Email\Sender\CreditmemoSender::send">
+            The sender assigns the credit memo's own primary key alongside the credit memo record.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="fixed">
+                The identifier is assigned by the database when the credit memo is created and never
+                changes.
+            </step>
+            <step id="use-increment">
+                Print creditmemo.increment_id instead when the message should show the customer their
+                credit memo number.
+            </step>
+        </affordance>
+        <caveat id="internal">
+            It is an internal key and means nothing to a recipient.
+        </caveat>
+    </variable>
+
+    <!--
+        The customer account messages. Magento\Customer\Model\EmailNotification assembles the set for
+        every one of them.
+    -->
+    <variable kind="var" expression="customer" outputKind="text">
+        <title>The customer</title>
+        <summary>The customer the message is addressed to.</summary>
+        <origin kind="template_var" locator="Magento\Customer\Model\EmailNotification">
+            For the account messages the notification service assigns the customer's record, with the
+            assembled display name added to it under the name field. The wish list sharing message
+            assigns the same kind of record. The payment failure message is the exception: there this
+            name holds the customer's name as plain text, or the word Guest.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="account">
+                Open Customers &gt; All Customers and edit the account the message is addressed to.
+            </step>
+        </affordance>
+        <caveat id="absence">
+            The sending code decides which variables a message receives, so a name assigned to the
+            customer account messages does not exist in another family. An unassigned name is not an
+            error: Magento\Email\Model\Template\Filter::varDirective asks for the variable with an empty
+            string as its fallback, so the directive quietly produces nothing at all.
+        </caveat>
+        <caveat id="two-shapes">
+            In the account and wish list messages this is a record to read fields from, as in
+            customer.name. In the payment failure message it is already the name, and reading a field
+            from it produces nothing.
+        </caveat>
+    </variable>
+
+    <variable kind="var" expression="customer.name" outputKind="text">
+        <title>Customer name</title>
+        <summary>The customer's name, assembled the way the store is configured to show names.</summary>
+        <origin kind="template_var" locator="Magento\Customer\Model\EmailNotification">
+            The notification service builds the name with Magento\Customer\Helper\View::getCustomerName
+            before sending, so any prefix, middle name and suffix that the store has made visible are
+            included.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="account">
+                Open Customers &gt; All Customers and edit the account's name fields.
+            </step>
+            <step id="parts">
+                Which name parts appear at all is decided by Stores &gt; Configuration &gt; Customers
+                &gt; Customer Configuration &gt; Name and Address Options.
+            </step>
+        </affordance>
+    </variable>
+
+    <variable kind="var" expression="customer.email" outputKind="text">
+        <title>Customer email address</title>
+        <summary>The address on the customer's account.</summary>
+        <origin kind="template_var" locator="Magento\Customer\Model\EmailNotification">
+            Read from the customer record the notification service assigns.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="account">
+                Open Customers &gt; All Customers and edit the account's email address.
+            </step>
+        </affordance>
+        <caveat id="which-address">
+            On the message announcing a change of address, this is the address held on the account when
+            the message is composed, which is not necessarily the address the message was delivered to.
+        </caveat>
+    </variable>
+
+    <variable kind="var" expression="this.getUrl($store,'customer/account/',[_nosid:1])" outputKind="url">
+        <title>Link to the customer account page</title>
+        <summary>The address of the store's customer account page.</summary>
+        <origin kind="computed" locator="Magento\Email\Model\AbstractTemplate::getUrl">
+            The template model itself is available under the name this while a message is rendered, and
+            getUrl builds a storefront address for the store view passed to it. The _nosid argument
+            keeps the session identifier out of the link.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="base-url">
+                The host and path come from the store view's base URL, under Stores &gt; Configuration
+                &gt; General &gt; Web.
+            </step>
+            <step id="route">
+                To point somewhere else, change the route in the directive itself, keeping $store as the
+                first argument so the link stays on the right store view.
+            </step>
+        </affordance>
+        <caveat id="written-several-ways">
+            The shipped templates write this call with slightly different arguments in different
+            messages, and each spelling is a separate entry here.
+        </caveat>
+    </variable>
+
+    <variable kind="var"
+              expression="this.getUrl($store,'customer/account/createPassword/',[_query:[id:$customer.id,token:$customer.rp_token],_nosid:1])"
+              outputKind="url">
+        <title>Link for setting a password</title>
+        <summary>A one-time address where the recipient can choose a password for their account.</summary>
+        <origin kind="computed" locator="Magento\Email\Model\AbstractTemplate::getUrl">
+            The template model builds a storefront address for the store view and appends the customer's
+            id together with the reset token held on their account, so the link only works for that
+            customer.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="expiry">
+                How long the link stays usable is set under Stores &gt; Configuration &gt; Customers
+                &gt; Customer Configuration &gt; Password Options.
+            </step>
+            <step id="base-url">
+                The host and path come from the store view's base URL, under Stores &gt; Configuration
+                &gt; General &gt; Web.
+            </step>
+        </affordance>
+        <caveat id="token-required">
+            The link only works while the account holds a reset token. Removing the token argument from
+            the directive produces a link that cannot set a password.
+        </caveat>
+    </variable>
+
+    <!--
+        The newsletter subscription messages. Magento\Newsletter\Model\Subscriber assembles the set for
+        the confirmation request; the queued newsletter is assembled by Magento\Newsletter\Model\Queue.
+    -->
+    <variable kind="var" expression="subscriber_data.confirmation_link" outputKind="url">
+        <title>Subscription confirmation link</title>
+        <summary>The address a new subscriber follows to confirm they asked to subscribe.</summary>
+        <origin kind="template_var" locator="Magento\Newsletter\Model\Subscriber::sendConfirmationRequestEmail">
+            The subscriber model builds the link from the subscriber's confirmation code and assigns it
+            under subscriber_data before sending the confirmation request.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="need-confirmation">
+                The message is only sent at all when Stores &gt; Configuration &gt; Customers &gt;
+                Newsletter asks subscribers to confirm.
+            </step>
+            <step id="base-url">
+                The host and path come from the store view's base URL, under Stores &gt; Configuration
+                &gt; General &gt; Web.
+            </step>
+        </affordance>
+        <caveat id="absence">
+            The sending code decides which variables a message receives, so a name assigned to the
+            confirmation request does not exist in the success or unsubscribe messages. An unassigned
+            name is not an error: Magento\Email\Model\Template\Filter::varDirective asks for the
+            variable with an empty string as its fallback, so the directive quietly produces nothing at
+            all.
+        </caveat>
+    </variable>
+
+    <variable kind="var" expression="subscriber_data.unsubscription_link" outputKind="url">
+        <title>Unsubscribe link</title>
+        <summary>The address a subscriber follows to stop receiving the newsletter.</summary>
+        <origin kind="template_var" locator="Magento\Newsletter\Model\Queue">
+            The queue builds the link from the subscriber's own record as it sends each copy of a queued
+            newsletter, and assigns it under subscriber_data.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="base-url">
+                The host and path come from the store view's base URL, under Stores &gt; Configuration
+                &gt; General &gt; Web.
+            </step>
+        </affordance>
+        <caveat id="queue-only">
+            Only a newsletter sent from a queue carries it. The subscription confirmation, success and
+            unsubscribe messages are sent by the subscriber model, which does not assign it, so there it
+            produces nothing.
+        </caveat>
+    </variable>
+
+    <!--
+        The contact form message. Magento\Contact\Controller\Index\Post hands the submitted form to
+        Magento\Contact\Model\Mail, which assigns the whole of it under the name data.
+    -->
+    <variable kind="var" expression="data.name" outputKind="text">
+        <title>Name given on the contact form</title>
+        <summary>The name the visitor typed into the contact form.</summary>
+        <origin kind="template_var" locator="Magento\Contact\Controller\Index\Post">
+            The controller wraps the submitted form and passes it to the contact mailer, which assigns
+            it under the name data. The form refuses to submit without a name.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="visitor">
+                Nothing in the administration decides this value; it is what the visitor typed.
+            </step>
+            <step id="recipient">
+                Where the message is sent is set under Stores &gt; Configuration &gt; General &gt;
+                Contacts.
+            </step>
+        </affordance>
+        <caveat id="untrusted">
+            It is text typed by a stranger. It reaches the template exactly as submitted, so removing
+            the escaping from this directive lets a visitor put markup into the message you receive.
+        </caveat>
+        <caveat id="absence">
+            The sending code decides which variables a message receives, so the names under data exist
+            only in the contact form message. An unassigned name is not an error:
+            Magento\Email\Model\Template\Filter::varDirective asks for the variable with an empty string
+            as its fallback, so the directive quietly produces nothing at all.
+        </caveat>
+    </variable>
+
+    <variable kind="var" expression="data.email" outputKind="text">
+        <title>Email address given on the contact form</title>
+        <summary>The address the visitor typed into the contact form.</summary>
+        <origin kind="template_var" locator="Magento\Contact\Controller\Index\Post">
+            The controller wraps the submitted form and passes it to the contact mailer, which assigns
+            it under the name data and also sets it as the address a reply goes to.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="visitor">
+                Nothing in the administration decides this value; it is what the visitor typed.
+            </step>
+        </affordance>
+        <caveat id="weak-check">
+            The controller only checks that the value contains an at sign before accepting the form, so
+            it is not necessarily a working address.
+        </caveat>
+        <caveat id="untrusted">
+            It is text typed by a stranger. It reaches the template exactly as submitted, so removing
+            the escaping from this directive lets a visitor put markup into the message you receive.
+        </caveat>
+    </variable>
+
+    <variable kind="var" expression="data.telephone" outputKind="text">
+        <title>Telephone number given on the contact form</title>
+        <summary>The telephone number the visitor typed into the contact form.</summary>
+        <origin kind="template_var" locator="Magento\Contact\Controller\Index\Post">
+            The controller wraps the submitted form and passes it to the contact mailer, which assigns
+            it under the name data.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="visitor">
+                Nothing in the administration decides this value; it is what the visitor typed.
+            </step>
+        </affordance>
+        <caveat id="optional">
+            The form is accepted without a telephone number, so this is frequently empty.
+        </caveat>
+        <caveat id="untrusted">
+            It is text typed by a stranger. It reaches the template exactly as submitted, so removing
+            the escaping from this directive lets a visitor put markup into the message you receive.
+        </caveat>
+    </variable>
+
+    <variable kind="var" expression="data.comment" outputKind="text">
+        <title>Message left on the contact form</title>
+        <summary>What the visitor wrote in the contact form's message box.</summary>
+        <origin kind="template_var" locator="Magento\Contact\Controller\Index\Post">
+            The controller wraps the submitted form and passes it to the contact mailer, which assigns
+            it under the name data. The form refuses to submit with an empty message.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="visitor">
+                Nothing in the administration decides this value; it is what the visitor typed.
+            </step>
+        </affordance>
+        <caveat id="untrusted">
+            It is text typed by a stranger. It reaches the template exactly as submitted, so removing
+            the escaping from this directive lets a visitor put markup into the message you receive.
+        </caveat>
+        <caveat id="line-breaks">
+            Line breaks arrive as they were typed and are not turned into markup, so a long message runs
+            together unless the directive is asked to convert them.
+        </caveat>
+    </variable>
+
+    <!--
+        The product alert messages. Magento\ProductAlert\Model\Email::send assembles the set for both the
+        price alert and the back-in-stock alert.
+    -->
+    <variable kind="var" expression="alertGrid" outputKind="html">
+        <title>Alerted products block</title>
+        <summary>The list of products the alert is about, laid out ready to print.</summary>
+        <origin kind="template_var" locator="Magento\ProductAlert\Model\Email::send">
+            The alert model renders the products into a storefront block while emulating the recipient's
+            store view, and assigns the rendered block under this name.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="theme">
+                The layout comes from the product alert block's own template. Override it in your own
+                theme to change it.
+            </step>
+            <step id="deploy">
+                Deploy static content so the change reaches the next alert that is sent.
+            </step>
+        </affordance>
+        <caveat id="contains-markup">
+            The value is a rendered block of markup, so a directive that escapes it shows the tags as
+            text. The shipped templates print it with the raw idiom.
+        </caveat>
+        <caveat id="absence">
+            The sending code decides which variables a message receives, so this name exists only in the
+            product alert messages. An unassigned name is not an error:
+            Magento\Email\Model\Template\Filter::varDirective asks for the variable with an empty string
+            as its fallback, so the directive quietly produces nothing at all.
+        </caveat>
+    </variable>
+
+    <variable kind="var" expression="customerName" outputKind="text">
+        <title>Customer name</title>
+        <summary>The name of the customer the message is about.</summary>
+        <origin kind="template_var" locator="Magento\ProductAlert\Model\Email::send">
+            The alert model builds the name with Magento\Customer\Helper\View::getCustomerName and
+            assigns it under this name. The wish list sharing message assigns the sharer's name the same
+            way, in Magento\Wishlist\Controller\Index\Send.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="account">
+                Open Customers &gt; All Customers and edit the account's name fields.
+            </step>
+            <step id="parts">
+                Which name parts appear at all is decided by Stores &gt; Configuration &gt; Customers
+                &gt; Customer Configuration &gt; Name and Address Options.
+            </step>
+        </affordance>
+        <caveat id="two-families">
+            In a product alert this is the recipient's name. In the wish list sharing message it is the
+            name of the person who shared the list, not the recipient's.
+        </caveat>
+    </variable>
+
+    <!--
+        The wish list sharing message. Magento\Wishlist\Controller\Index\Send assembles the set as it
+        sends a copy to each address the sharer entered.
+    -->
+    <variable kind="var" expression="viewOnSiteLink" outputKind="url">
+        <title>Link to the shared wish list</title>
+        <summary>The address where the recipient can see the whole shared wish list.</summary>
+        <origin kind="template_var" locator="Magento\Wishlist\Controller\Index\Send">
+            The controller builds the link from the wish list's sharing code, so it opens that one list
+            without the recipient signing in.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="base-url">
+                The host and path come from the store view's base URL, under Stores &gt; Configuration
+                &gt; General &gt; Web.
+            </step>
+        </affordance>
+        <caveat id="absence">
+            The sending code decides which variables a message receives, so this name exists only in the
+            wish list sharing message. An unassigned name is not an error:
+            Magento\Email\Model\Template\Filter::varDirective asks for the variable with an empty string
+            as its fallback, so the directive quietly produces nothing at all.
+        </caveat>
+    </variable>
+
+    <variable kind="var" expression="items" outputKind="html">
+        <title>Items block</title>
+        <summary>The list of items the message is about, laid out ready to print.</summary>
+        <origin kind="template_var" locator="Magento\Wishlist\Controller\Index\Send">
+            The wish list controller renders the list's items into a storefront block and assigns the
+            rendered block under this name. The payment failure message assigns a different thing under
+            the same name: Magento\Sales\Model\Service\PaymentFailuresService builds one line per basket
+            item and joins them with line-break markup.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="theme">
+                In the wish list message the layout comes from the wish list email items block. Override
+                its template in your own theme to change it.
+            </step>
+            <step id="payment-failure">
+                In the payment failure message the wording is built in the sending code and cannot be
+                changed from the template.
+            </step>
+        </affordance>
+        <caveat id="contains-markup">
+            The value carries markup in both messages, so a directive that escapes it shows the tags as
+            text. The shipped templates print it with the raw idiom.
+        </caveat>
+    </variable>
+
+    <variable kind="var" expression="message" outputKind="html">
+        <title>Message from the sender</title>
+        <summary>The note the person sharing the list or the product wrote to the recipient.</summary>
+        <origin kind="template_var" locator="Magento\Wishlist\Controller\Index\Send">
+            The wish list controller escapes what was typed and turns its line breaks into markup before
+            assigning it, and appends the feed link when one was asked for.
+            Magento\SendFriend\Model\SendFriend::send prepares the note on the share-a-product message
+            exactly the same way.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="visitor">
+                Nothing in the administration decides this value; it is what the sender typed on the
+                sharing form.
+            </step>
+            <step id="length">
+                How long the note may be is set under Stores &gt; Configuration &gt; Customers &gt; Wish
+                List for the wish list, and under Catalog &gt; Email to a Friend for the product share.
+            </step>
+        </affordance>
+        <caveat id="already-escaped">
+            The sending code has already made the text safe and converted its line breaks, which is why
+            the shipped templates print it with the raw idiom. Escaping it a second time would show the
+            line-break tags as text.
+        </caveat>
+        <caveat id="optional">
+            The sharing forms accept an empty note, so the shipped templates wrap it in a depend
+            directive.
+        </caveat>
+    </variable>
+
+    <!--
+        The share-a-product message. Magento\SendFriend\Model\SendFriend::send assembles the set once per
+        recipient.
+    -->
+    <variable kind="var" expression="product_name" outputKind="text">
+        <title>Shared product name</title>
+        <summary>The name of the product being shared.</summary>
+        <origin kind="template_var" locator="Magento\SendFriend\Model\SendFriend::send">
+            The model reads the name from the product being shared and assigns it under this name.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="catalog">
+                Open Catalog &gt; Products and edit the product's name for the store view the message is
+                sent in.
+            </step>
+        </affordance>
+        <caveat id="absence">
+            The sending code decides which variables a message receives, so the names in this set exist
+            only in the share-a-product message. An unassigned name is not an error:
+            Magento\Email\Model\Template\Filter::varDirective asks for the variable with an empty string
+            as its fallback, so the directive quietly produces nothing at all.
+        </caveat>
+    </variable>
+
+    <variable kind="var" expression="product_url" outputKind="url">
+        <title>Shared product link</title>
+        <summary>The address of the product being shared.</summary>
+        <origin kind="template_var" locator="Magento\SendFriend\Model\SendFriend::send">
+            The model asks the product for its address in the current store and assigns it under this
+            name.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="url-key">
+                The path comes from the product's URL key, on the product's Search Engine Optimization
+                section under Catalog &gt; Products.
+            </step>
+            <step id="base-url">
+                The host comes from the store view's base URL, under Stores &gt; Configuration &gt;
+                General &gt; Web.
+            </step>
+        </affordance>
+    </variable>
+
+    <variable kind="var" expression="product_image" outputKind="url">
+        <title>Shared product image</title>
+        <summary>The address of the small image of the product being shared.</summary>
+        <origin kind="template_var" locator="Magento\SendFriend\Model\SendFriend::send">
+            The model prepares the product's image in the size the share-a-product message asks for and
+            assigns its address. When the product has no image of that role, the placeholder's address is
+            assigned instead.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="image">
+                Open Catalog &gt; Products and set the product's small image.
+            </step>
+            <step id="placeholder">
+                The stand-in used when there is no image is set under Stores &gt; Configuration &gt;
+                Catalog &gt; Catalog &gt; Product Image Placeholders.
+            </step>
+        </affordance>
+        <caveat id="never-empty">
+            It is never empty: without a product image the placeholder is used, so the message always
+            shows a picture of some kind.
+        </caveat>
+    </variable>
+
+    <variable kind="var" expression="name" outputKind="text">
+        <title>Recipient name</title>
+        <summary>The name of the person the shared product is being sent to.</summary>
+        <origin kind="template_var" locator="Magento\SendFriend\Model\SendFriend::send">
+            The model takes the name from the sharing form, one per recipient, and assigns it under this
+            name for that recipient's copy of the message.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="visitor">
+                Nothing in the administration decides this value; it is what the sender typed on the
+                sharing form.
+            </step>
+        </affordance>
+        <caveat id="very-general-name">
+            The name is unusually plain, and no other message assigns it. Do not expect it to mean
+            anything outside the share-a-product message.
+        </caveat>
+    </variable>
+
+    <variable kind="var" expression="email" outputKind="text">
+        <title>Recipient email address</title>
+        <summary>The address the shared product is being sent to.</summary>
+        <origin kind="template_var" locator="Magento\SendFriend\Model\SendFriend::send">
+            The model takes the address from the sharing form, one per recipient, and assigns it under
+            this name for that recipient's copy of the message.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="visitor">
+                Nothing in the administration decides this value; it is what the sender typed on the
+                sharing form.
+            </step>
+        </affordance>
+        <caveat id="very-general-name">
+            The name is unusually plain, and no other message assigns it. Do not expect it to mean
+            anything outside the share-a-product message.
+        </caveat>
+    </variable>
+
+    <variable kind="var" expression="sender_name" outputKind="text">
+        <title>Sharer name</title>
+        <summary>The name of the person who shared the product.</summary>
+        <origin kind="template_var" locator="Magento\SendFriend\Model\SendFriend::send">
+            The model escapes the name given on the sharing form and assigns it under this name. It also
+            uses it as the name a reply to the message would go to.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="visitor">
+                Nothing in the administration decides this value; it is what the sender typed on the
+                sharing form.
+            </step>
+        </affordance>
+        <caveat id="already-escaped">
+            The value has already been made safe by the sending code, so the message shows it as text
+            whatever the directive is asked to do.
+        </caveat>
+    </variable>
+
+    <variable kind="var" expression="sender_email" outputKind="text">
+        <title>Sharer email address</title>
+        <summary>The address of the person who shared the product.</summary>
+        <origin kind="template_var" locator="Magento\SendFriend\Model\SendFriend::send">
+            The model escapes the address given on the sharing form and assigns it under this name. It
+            also uses it as the address a reply to the message would go to.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="visitor">
+                Nothing in the administration decides this value; it is what the sender typed on the
+                sharing form.
+            </step>
+        </affordance>
+        <caveat id="not-the-sender">
+            The message is sent from the store's own General Contact identity, not from this address.
+            Only a reply goes here.
+        </caveat>
+    </variable>
+
+    <!--
+        The payment failure message. Magento\Sales\Model\Service\PaymentFailuresService::handle assembles
+        the set from the basket the payment was attempted on.
+    -->
+    <variable kind="var" expression="reason" outputKind="text">
+        <title>Why the payment failed</title>
+        <summary>The explanation the payment attempt came back with.</summary>
+        <origin kind="template_var" locator="Magento\Sales\Model\Service\PaymentFailuresService::handle">
+            The message that reached the checkout when the payment was refused is passed straight through
+            to the template.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="gateway">
+                The wording comes from the payment method that refused the payment and cannot be changed
+                from the template.
+            </step>
+        </affordance>
+        <caveat id="absence">
+            The sending code decides which variables a message receives, so the names in this set exist
+            only in the payment failure message. An unassigned name is not an error:
+            Magento\Email\Model\Template\Filter::varDirective asks for the variable with an empty string
+            as its fallback, so the directive quietly produces nothing at all.
+        </caveat>
+        <caveat id="internal-audience">
+            The message goes to a member of staff rather than to the customer: the recipient is chosen
+            under Stores &gt; Configuration &gt; Sales &gt; Checkout &gt; Payment Failed Emails.
+        </caveat>
+    </variable>
+
+    <variable kind="var" expression="checkoutType" outputKind="text">
+        <title>Where the payment was attempted</title>
+        <summary>Which checkout the failed payment was made through.</summary>
+        <origin kind="template_var" locator="Magento\Sales\Model\Service\PaymentFailuresService::handle">
+            The code that reports the failure names the checkout it happened in; the standard checkout
+            reports itself as onepage.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="code">
+                The value is decided by the code reporting the failure and cannot be changed from the
+                template.
+            </step>
+        </affordance>
+        <caveat id="not-translated">
+            It is an internal name rather than a phrase prepared for reading, and it is not translated.
+        </caveat>
+    </variable>
+
+    <variable kind="var" expression="customerEmail" outputKind="text">
+        <title>Address on the basket</title>
+        <summary>The email address recorded on the basket the payment failed for.</summary>
+        <origin kind="template_var" locator="Magento\Sales\Model\Service\PaymentFailuresService::handle">
+            Read from the billing address of the basket.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="basket">
+                The value comes from what the shopper entered in the checkout and cannot be changed from
+                the template.
+            </step>
+        </affordance>
+    </variable>
+
+    <variable kind="var" expression="dateAndTime" outputKind="date">
+        <title>When the message was composed</title>
+        <summary>The date and time written into the payment failure message.</summary>
+        <origin kind="template_var" locator="Magento\Sales\Model\Service\PaymentFailuresService::handle">
+            The sending code formats the current moment at medium date and time length. Despite the
+            template's label it is the moment the message is composed, not the moment the payment was
+            attempted.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="timezone">
+                The time zone and the wording follow the locale settings under Stores &gt; Configuration
+                &gt; General &gt; Locale Options.
+            </step>
+        </affordance>
+        <caveat id="not-the-transaction-time">
+            It is the time the message was put together. When failures are reported in a batch, it is
+            not the time of the payment attempt.
+        </caveat>
+    </variable>
+
+    <variable kind="var" expression="paymentMethod" outputKind="text">
+        <title>Payment method title</title>
+        <summary>The name of the payment method the shopper tried to pay with.</summary>
+        <origin kind="template_var" locator="Magento\Sales\Model\Service\PaymentFailuresService::handle">
+            The sending code reads the title configured for the method the basket was using.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="config">
+                Open Stores &gt; Configuration &gt; Sales &gt; Payment Methods and edit the method's
+                title.
+            </step>
+        </affordance>
+        <caveat id="empty-when-unset">
+            When the basket never got as far as choosing a method, there is no title to read and the
+            value is empty.
+        </caveat>
+    </variable>
+
+    <variable kind="var" expression="shippingMethod" outputKind="text">
+        <title>Delivery method title</title>
+        <summary>The name of the delivery method chosen on the basket.</summary>
+        <origin kind="template_var" locator="Magento\Sales\Model\Service\PaymentFailuresService::handle">
+            The sending code takes the carrier from the basket's shipping method and reads that carrier's
+            configured title.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="config">
+                Open Stores &gt; Configuration &gt; Sales &gt; Delivery Methods and edit the carrier's
+                title.
+            </step>
+        </affordance>
+        <caveat id="guarded">
+            A basket with nothing to deliver has no method, so the value is empty. The shipped template
+            wraps the delivery section in a depend directive on it.
+        </caveat>
+    </variable>
+
+    <variable kind="var" expression="total" outputKind="text">
+        <title>Basket total</title>
+        <summary>The value of the basket the payment failed for.</summary>
+        <origin kind="template_var" locator="Magento\Sales\Model\Service\PaymentFailuresService::handle">
+            The sending code joins the basket's store currency code and its grand total into one string.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="code">
+                The wording is built in the sending code and cannot be changed from the template.
+            </step>
+        </affordance>
+        <caveat id="unformatted">
+            The amount is not formatted for the locale: it is the currency code, a space, and the number
+            as it is stored, so it can carry more decimal places than a price normally shows.
+        </caveat>
+    </variable>
+
+    <variable kind="var" expression="billingAddressHtml" outputKind="html">
+        <title>Billing address block on the basket</title>
+        <summary>The billing address entered in the checkout, laid out ready to print.</summary>
+        <origin kind="template_var" locator="Magento\Sales\Model\Service\PaymentFailuresService::handle">
+            The sending code formats the basket's billing address in the html layout and assigns the
+            result under this name.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="layout">
+                To change how any address is laid out, open Stores &gt; Configuration &gt; Customers
+                &gt; Customer Configuration &gt; Address Templates and edit the HTML template.
+            </step>
+        </affordance>
+        <caveat id="contains-markup">
+            The html layout puts line breaks and a telephone link into the value, so a directive that
+            escapes it shows the tags as text. The shipped template prints it with the raw idiom.
+        </caveat>
+    </variable>
+
+    <variable kind="var" expression="shippingAddressHtml" outputKind="html">
+        <title>Delivery address block on the basket</title>
+        <summary>The delivery address entered in the checkout, laid out ready to print.</summary>
+        <origin kind="template_var" locator="Magento\Sales\Model\Service\PaymentFailuresService::handle">
+            The sending code formats the basket's shipping address in the html layout and assigns the
+            result under this name.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="layout">
+                To change how any address is laid out, open Stores &gt; Configuration &gt; Customers
+                &gt; Customer Configuration &gt; Address Templates and edit the HTML template.
+            </step>
+        </affordance>
+        <caveat id="contains-markup">
+            The html layout puts line breaks and a telephone link into the value, so a directive that
+            escapes it shows the tags as text. The shipped template prints it with the raw idiom.
+        </caveat>
+    </variable>
+
+    <!--
+        The header and footer. These four values come from the design configuration rather than from a
+        configuration section, which is why they are edited on a different page from everything else
+        here. Magento\Email\Model\AbstractTemplate::addEmailVariables puts them in place for every
+        message, so a template of any family may use them.
+    -->
+    <variable kind="var" expression="logo_url" outputKind="url">
+        <title>Email logo image</title>
+        <summary>The address of the picture shown at the top of the message.</summary>
+        <origin kind="design_config" locator="design/email/logo">
+            Magento\Email\Model\AbstractTemplate::getLogoUrl looks for the file named in the design
+            configuration under the media directory and builds its address. When no file is configured,
+            or the configured file is missing, it falls back to the logo that ships with the current
+            theme.
+        </origin>
+        <affordance kind="link" label="Open Design Configuration" route="theme/design_config/index"/>
+        <caveat id="where">
+            The setting is Logo Image, in the Transactional Emails section of a design configuration
+            record.
+        </caveat>
+        <caveat id="scope">
+            Design configuration is kept per scope, and the list shows one row for the default, one for
+            each website and one for each store view. Open the row for the store view the message is
+            sent in.
+        </caveat>
+        <caveat id="never-empty">
+            It is never empty. Without an uploaded file the theme's own logo is used, so a message
+            always shows a picture.
+        </caveat>
+    </variable>
+
+    <variable kind="var" expression="logo_alt" outputKind="text">
+        <title>Email logo alternative text</title>
+        <summary>The words shown in place of the logo when the picture cannot be loaded.</summary>
+        <origin kind="design_config" locator="design/email/logo_alt">
+            Magento\Email\Model\AbstractTemplate::getLogoAlt reads the design configuration and, when
+            nothing is set there, falls back to the store view's frontend name.
+        </origin>
+        <affordance kind="link" label="Open Design Configuration" route="theme/design_config/index"/>
+        <caveat id="where">
+            The setting is Logo Image Alt, in the Transactional Emails section of a design configuration
+            record.
+        </caveat>
+        <caveat id="fallback">
+            Leaving it blank does not produce a blank: the store view's name is used instead.
+        </caveat>
+        <caveat id="no-markup">
+            The design configuration form refuses a value containing tags, so this is always plain text.
+        </caveat>
+    </variable>
+
+    <variable kind="var" expression="logo_width" outputKind="number">
+        <title>Email logo width</title>
+        <summary>How wide the logo is drawn, in pixels.</summary>
+        <origin kind="design_config" locator="design/email/logo_width">
+            Magento\Email\Model\AbstractTemplate::addEmailVariables reads the design configuration for
+            the store view the message is sent in. There is no fallback in the code.
+        </origin>
+        <affordance kind="link" label="Open Design Configuration" route="theme/design_config/index"/>
+        <caveat id="where">
+            The setting is Logo Width, in the Transactional Emails section of a design configuration
+            record.
+        </caveat>
+        <caveat id="template-fallback">
+            The shipped header does the falling back itself: when nothing is set it draws the logo 180
+            pixels wide.
+        </caveat>
+        <caveat id="digits-only">
+            The design configuration form accepts digits only, so the number is written without a unit.
+        </caveat>
+    </variable>
+
+    <variable kind="var" expression="logo_height" outputKind="number">
+        <title>Email logo height</title>
+        <summary>How tall the logo is drawn, in pixels.</summary>
+        <origin kind="design_config" locator="design/email/logo_height">
+            Magento\Email\Model\AbstractTemplate::addEmailVariables reads the design configuration for
+            the store view the message is sent in. There is no fallback in the code.
+        </origin>
+        <affordance kind="link" label="Open Design Configuration" route="theme/design_config/index"/>
+        <caveat id="where">
+            The setting is Logo Height, in the Transactional Emails section of a design configuration
+            record.
+        </caveat>
+        <caveat id="template-fallback">
+            Unlike the width, the shipped header sets no height at all when nothing is configured; the
+            picture keeps its own proportions.
+        </caveat>
+        <caveat id="digits-only">
+            The design configuration form accepts digits only, so the number is written without a unit.
+        </caveat>
+    </variable>
+
+    <variable kind="var" expression="template_styles" outputKind="html">
+        <title>Template styles</title>
+        <summary>The style rules a message carries of its own, printed inside the header's style block.</summary>
+        <origin kind="computed" locator="Magento\Email\Model\AbstractTemplate::addEmailVariables">
+            For a template held in a file, the rules come from a styles annotation at the top of that
+            file, which Magento\Email\Model\AbstractTemplate strips out while loading it. For a template
+            saved in the administration, they come from that template's own Template Styles field.
+        </origin>
+        <affordance kind="instruction" label="How to change this">
+            <step id="db-template">
+                For a template saved in the administration, edit its Template Styles field under
+                Marketing &gt; Email Templates.
+            </step>
+            <step id="file-template">
+                For a template held in a file, edit the styles annotation at the top of that file, in
+                your own theme rather than in the module it came from.
+            </step>
+        </affordance>
+        <caveat id="contains-markup">
+            The value is a block of style rules, so a directive that escapes it shows them as text
+            inside the message. The shipped header prints it with the raw idiom.
+        </caveat>
+        <caveat id="plain-text">
+            A plain-text message is not given the value at all, so there the directive produces nothing.
+        </caveat>
+        <caveat id="parent-wins">
+            The header is included by the message around it and receives that message's variables, so
+            what it prints are the message's own style rules. The header's own rules are only used when
+            the message above it has none.
+        </caveat>
+    </variable>
+</variables>

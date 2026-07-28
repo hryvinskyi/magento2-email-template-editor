@@ -8,8 +8,11 @@ define([
     'uiComponent',
     'ko',
     'jquery',
-    'emailEditorDiffEngine'
-], function (Component, ko, $, DiffEngine) {
+    'mage/translate',
+    'emailEditorDiffEngine',
+    'Hryvinskyi_EmailTemplateEditor/js/email-editor/parent-resolver',
+    'Hryvinskyi_EmailTemplateEditor/js/email-editor/failure-reporter'
+], function (Component, ko, $, $t, DiffEngine, parentResolver, failureReporter) {
     'use strict';
 
     return Component.extend({
@@ -52,6 +55,10 @@ define([
         show: function (identifier, storeId) {
             this._currentIdentifier = identifier;
             this._currentStoreId = storeId;
+
+            // Open on the version list, never on whatever the panel was last showing -
+            // a comparison, or a message about a load that failed the time before.
+            this.showDiff(false);
             this.isVisible(true);
             this._loadVersions();
         },
@@ -77,9 +84,21 @@ define([
                 template_identifier: this._currentIdentifier,
                 store_id: this._currentStoreId
             }).done(function (res) {
-                var versions = res.versions || [];
+                if (res.success === false) {
+                    self.entries([]);
+                    self._showMessage(res.message || $t('The version history could not be loaded.'));
 
-                self.entries(versions);
+                    return;
+                }
+
+                self.entries(res.versions || []);
+            }).fail(function (xhr, textStatus) {
+                if (failureReporter.isAbort(textStatus)) {
+                    return;
+                }
+
+                self.entries([]);
+                self._showMessage($t('The version history could not be loaded. Please try again.'));
             }).always(function () {
                 self.isLoading(false);
             });
@@ -100,6 +119,23 @@ define([
                 version_id: entry.version_id
             }).done(function (res) {
                 self.trigger('historyPreview', res);
+
+                if (!res.success) {
+                    self.activePreviewId(null);
+                    self._showMessage(res.message || $t('This version could not be previewed.'));
+                }
+            }).fail(function (xhr, textStatus) {
+                // The preview overlay was raised before this request went out and only
+                // this event lowers it again, so it has to be fired on every ending -
+                // otherwise a failure leaves the preview spinning with nothing coming.
+                self.trigger('historyPreview', {success: false});
+                self.activePreviewId(null);
+
+                if (failureReporter.isAbort(textStatus)) {
+                    return;
+                }
+
+                self._showMessage($t('This version could not be previewed. Please try again.'));
             });
         },
 
@@ -139,6 +175,8 @@ define([
                 version_id_b: entry.version_id
             }).done(function (res) {
                 if (!res.success) {
+                    self._showMessage(res.message || $t('This comparison could not be built.'));
+
                     return;
                 }
 
@@ -187,6 +225,12 @@ define([
                 self.diffHtml(html);
                 self.diffLabel('v' + entry.version_number + ' changes');
                 self.showDiff(true);
+            }).fail(function (xhr, textStatus) {
+                if (failureReporter.isAbort(textStatus)) {
+                    return;
+                }
+
+                self._showMessage($t('This comparison could not be built. Please try again.'));
             });
         },
 
@@ -219,30 +263,75 @@ define([
                         template_identifier: self._currentIdentifier,
                         store_id: self._currentStoreId
                     }).done(function (res) {
+                        if (!res.success) {
+                            self._showMessage(res.message || $t('This version could not be restored.'));
+
+                            return;
+                        }
+
                         self.trigger('historyRestore', res);
                         self.close();
+                    }).fail(function (xhr, textStatus) {
+                        if (failureReporter.isAbort(textStatus)) {
+                            return;
+                        }
+
+                        self._showMessage($t('This version could not be restored. Please try again.'));
                     });
                 }
             });
         },
 
         /**
+         * Show a message inside this panel.
+         *
+         * This panel is a modal that covers the whole screen, the editor's status line
+         * included, so a message about it has to be rendered where the user is actually
+         * looking. The panel already has one place for text that is not a version list -
+         * the pane that says a version has nothing to be compared against - and that is
+         * the place reused here, so there is one message surface rather than two.
+         *
+         * @param {string} message - What to tell the user; already translated.
+         * @return {void}
+         * @private
+         */
+        _showMessage: function (message) {
+            this.diffHtml('<div class="ete-diff-empty">' + this._escapeHtml(message) + '</div>');
+            this.diffLabel('');
+            this.showDiff(true);
+        },
+
+        /**
          * Perform an AJAX request with automatic form_key injection.
+         *
+         * The request is handed to the editor so that it counts towards the one busy
+         * state the whole screen shares and can be reached by its cancellation sweep.
+         * The jqXHR itself is what comes back, synchronously, so every caller keeps
+         * chaining .done/.fail on the request exactly as before. While the editor is
+         * not registered yet the request simply goes out untracked - invisible is far
+         * better than not sent at all, and that window closes during page load.
          *
          * @param {string} url
          * @param {string} method
          * @param {Object} data
-         * @return {Object}
+         * @return {jQuery.jqXHR}
          */
         _ajax: function (url, method, data) {
+            var editor = parentResolver.peek(this),
+                xhr;
+
             data.form_key = this.formKey;
 
-            return $.ajax({
+            xhr = $.ajax({
                 url: url,
                 type: method,
                 data: data,
                 dataType: 'json'
             });
+
+            return editor && typeof editor.trackRequest === 'function'
+                ? editor.trackRequest(xhr)
+                : xhr;
         },
 
         /**

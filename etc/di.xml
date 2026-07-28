@@ -12,6 +12,8 @@
     <!-- Data Interface Preferences -->
     <preference for="Hryvinskyi\EmailTemplateEditor\Api\Data\ThemeInterface"
                 type="Hryvinskyi\EmailTemplateEditor\Model\Theme"/>
+    <preference for="Hryvinskyi\EmailTemplateEditor\Api\Data\ThemeFactoryInterface"
+                type="Hryvinskyi\EmailTemplateEditor\Model\Data\ThemeFactory"/>
     <preference for="Hryvinskyi\EmailTemplateEditor\Api\Data\TemplateOverrideInterface"
                 type="Hryvinskyi\EmailTemplateEditor\Model\TemplateOverride"/>
     <preference for="Hryvinskyi\EmailTemplateEditor\Api\Data\TemplateVersionInterface"
@@ -22,6 +24,8 @@
                 type="Hryvinskyi\EmailTemplateEditor\Model\Config"/>
     <preference for="Hryvinskyi\EmailTemplateEditor\Api\ThemeRepositoryInterface"
                 type="Hryvinskyi\EmailTemplateEditor\Model\ThemeRepository"/>
+    <preference for="Hryvinskyi\EmailTemplateEditor\Api\ThemeWriterInterface"
+                type="Hryvinskyi\EmailTemplateEditor\Model\ThemeWriter"/>
     <preference for="Hryvinskyi\EmailTemplateEditor\Api\TemplateOverrideRepositoryInterface"
                 type="Hryvinskyi\EmailTemplateEditor\Model\TemplateOverrideRepository"/>
     <preference for="Hryvinskyi\EmailTemplateEditor\Api\LegacyTemplateRepositoryInterface"
@@ -44,6 +48,14 @@
                 type="Hryvinskyi\EmailTemplateEditor\Model\CssLayerFlattener"/>
     <preference for="Hryvinskyi\EmailTemplateEditor\Api\CssVariableResolverInterface"
                 type="Hryvinskyi\EmailTemplateEditor\Model\CssVariableResolver"/>
+    <preference for="Hryvinskyi\EmailTemplateEditor\Api\CssImportantPromoterInterface"
+                type="Hryvinskyi\EmailTemplateEditor\Model\CssImportantPromoter"/>
+    <preference for="Hryvinskyi\EmailTemplateEditor\Api\CssColorConverterInterface"
+                type="Hryvinskyi\EmailTemplateEditor\Model\CssColorConverter"/>
+    <preference for="Hryvinskyi\EmailTemplateEditor\Api\Color\ColorParserInterface"
+                type="Hryvinskyi\EmailTemplateEditor\Model\Color\ColorParser"/>
+    <preference for="Hryvinskyi\EmailTemplateEditor\Api\Color\ColorMixerInterface"
+                type="Hryvinskyi\EmailTemplateEditor\Model\Color\ColorMixer"/>
     <preference for="Hryvinskyi\EmailTemplateEditor\Api\PluginBypassFlagInterface"
                 type="Hryvinskyi\EmailTemplateEditor\Model\PluginBypassFlag"/>
     <preference for="Hryvinskyi\EmailTemplateEditor\Api\EditorContextFlagInterface"
@@ -64,6 +76,71 @@
                 type="Hryvinskyi\EmailTemplateEditor\Model\SampleData\MockVariableBuilderPool"/>
     <preference for="Hryvinskyi\EmailTemplateEditor\Api\ScheduleConflictDetectorInterface"
                 type="Hryvinskyi\EmailTemplateEditor\Model\ScheduleConflictDetector"/>
+
+    <!-- Variable Knowledge: directive references -->
+    <preference for="Hryvinskyi\EmailTemplateEditor\Api\Data\Knowledge\DirectiveReferenceInterface"
+                type="Hryvinskyi\EmailTemplateEditor\Model\Knowledge\Data\DirectiveReference"/>
+    <preference for="Hryvinskyi\EmailTemplateEditor\Api\Data\Knowledge\ModifierCallInterface"
+                type="Hryvinskyi\EmailTemplateEditor\Model\Knowledge\Data\ModifierCall"/>
+    <preference for="Hryvinskyi\EmailTemplateEditor\Api\Knowledge\DirectiveReferenceParserInterface"
+                type="Hryvinskyi\EmailTemplateEditor\Model\Knowledge\DirectiveReferenceParser"/>
+
+    <!--
+        Variable Knowledge: what the merchant-defined and template-declared variables are read from.
+
+        The custom-variable index and the template's own declarations are each read once per request
+        and shared by everyone who needs them - the chooser an author picks a variable from and the
+        descriptions shown for the directives already in the content - because a single description
+        request asks about hundreds of directives and a load per question turns one query into
+        hundreds.
+
+        The describe context carries the template being described to the one source that cannot
+        answer without it. It is request-scoped mutable state: whoever sets it clears it in a
+        finally, or a template identifier left behind answers the next description confidently about
+        the wrong template.
+    -->
+    <preference for="Hryvinskyi\EmailTemplateEditor\Api\TemplateVariableDeclarationsInterface"
+                type="Hryvinskyi\EmailTemplateEditor\Model\TemplateVariableDeclarations"/>
+    <preference for="Hryvinskyi\EmailTemplateEditor\Api\Knowledge\CustomVariableIndexInterface"
+                type="Hryvinskyi\EmailTemplateEditor\Model\Knowledge\CustomVariableIndex"/>
+    <preference for="Hryvinskyi\EmailTemplateEditor\Api\Knowledge\DescribeContextInterface"
+                type="Hryvinskyi\EmailTemplateEditor\Model\Knowledge\DescribeContext"/>
+
+    <!--
+        Variable Knowledge: entries and the registry that answers with them.
+
+        EditAffordanceInterface has no preference on purpose: its implementation is reachable only
+        through named constructors, each of which refuses an affordance that would render as a
+        control doing nothing, so it is never built by the object manager.
+    -->
+    <preference for="Hryvinskyi\EmailTemplateEditor\Api\Data\Knowledge\OriginInterface"
+                type="Hryvinskyi\EmailTemplateEditor\Model\Knowledge\Data\Origin"/>
+    <preference for="Hryvinskyi\EmailTemplateEditor\Api\Data\Knowledge\ResolvedValueInterface"
+                type="Hryvinskyi\EmailTemplateEditor\Model\Knowledge\Data\ResolvedValue"/>
+    <preference for="Hryvinskyi\EmailTemplateEditor\Api\Data\Knowledge\VariableKnowledgeInterface"
+                type="Hryvinskyi\EmailTemplateEditor\Model\Knowledge\Data\VariableKnowledge"/>
+    <preference for="Hryvinskyi\EmailTemplateEditor\Api\Knowledge\VariableKnowledgeRegistryInterface"
+                type="Hryvinskyi\EmailTemplateEditor\Model\Knowledge\VariableKnowledgeRegistry"/>
+    <preference for="Hryvinskyi\EmailTemplateEditor\Api\Data\Knowledge\ModifierDescriptorInterface"
+                type="Hryvinskyi\EmailTemplateEditor\Model\Knowledge\Data\ModifierDescriptor"/>
+    <preference for="Hryvinskyi\EmailTemplateEditor\Api\Knowledge\ModifierRegistryInterface"
+                type="Hryvinskyi\EmailTemplateEditor\Model\Knowledge\ModifierRegistry"/>
+
+    <!--
+        Variable Knowledge: the single decision about whether a store configuration value may be
+        written from the editor.
+
+        It is a service rather than a private method because the question is asked in two places far
+        apart - once when an entry is built, to decide whether an inline editor is offered, and again
+        when a write arrives, because the browser's answer is never trusted. Two copies of that
+        predicate would drift, and the copy that drifts is the one nobody is watching.
+
+        WritabilityVerdictInterface has no preference on purpose: its implementation is reachable
+        only through named constructors, one of which refuses a refusal that carries no reason, so it
+        is never built by the object manager.
+    -->
+    <preference for="Hryvinskyi\EmailTemplateEditor\Api\Knowledge\ConfigPathWritabilityInterface"
+                type="Hryvinskyi\EmailTemplateEditor\Model\Knowledge\ConfigPathWritability"/>
 
     <!-- Logger -->
     <virtualType name="Hryvinskyi\EmailTemplateEditor\Logger\Handler"
@@ -102,6 +179,12 @@
     </type>
 
     <type name="Hryvinskyi\EmailTemplateEditor\Plugin\EmailTemplatePlugin">
+        <arguments>
+            <argument name="logger" xsi:type="object">Hryvinskyi\EmailTemplateEditor\Logger\Logger</argument>
+        </arguments>
+    </type>
+
+    <type name="Hryvinskyi\EmailTemplateEditor\Model\TemplateLoader">
         <arguments>
             <argument name="logger" xsi:type="object">Hryvinskyi\EmailTemplateEditor\Logger\Logger</argument>
         </arguments>
@@ -250,4 +333,361 @@
                 type="Hryvinskyi\EmailTemplateEditor\Plugin\EmailTemplatePlugin"
                 sortOrder="10"/>
     </type>
+
+    <!--
+        Variable Knowledge pools.
+
+        Every pool below is walked in order, asking each member whether it supports the case at hand
+        and taking the first that says yes. The order is carried by the sortOrder attribute on each
+        item and never by where the item sits in this file: an array argument is sorted by
+        Magento\Framework\ObjectManager\Helper\SortItems, which
+        Magento\Framework\Data\Argument\Interpreter\ArrayType applies before the array reaches a
+        constructor. File order could not carry precedence, because items for one pool are written in
+        several places that cannot see one another and, once modules are merged, the resulting order
+        is module load order rather than anyone's intent. Precedence has to survive a third party
+        contributing a member, and only sortOrder does.
+
+        The slots, so that each contribution can be written without reading the others. The gaps are
+        deliberate: another module slots in between without editing anything here.
+
+            VariableKnowledgeRegistry / providers            xml                10
+                                                             config_path        20
+                                                             custom_variable    30
+                                                             template_vars      90
+            VariableKnowledgeRegistry / affordanceResolvers  config             10
+                                                             custom_variable    20
+                                                             instruction       900
+            ReferenceValueResolver / strategies              config             10
+                                                             custom_variable    20
+                                                             mock               30
+                                                             unavailable       900
+            ReferenceValueWriter / strategies                config             10
+                                                             custom_variable    20
+                                                             (no member claiming everything: an
+                                                             origin nothing claims is a refusal)
+            ModifierRegistry / descriptors                   escape             10
+                                                             nl2br              20
+                                                             raw                30
+    -->
+    <type name="Hryvinskyi\EmailTemplateEditor\Model\Knowledge\VariableKnowledgeRegistry">
+        <arguments>
+            <!--
+                Sources of knowledge, highest precedence first. The registry refuses an empty pool at
+                construction, so a merge that dropped every source fails loudly instead of answering
+                every reference with "not documented".
+            -->
+            <argument name="providers" xsi:type="array">
+                <!-- Each source contributes its own item, carrying the sortOrder listed above. -->
+                <!--
+                    Asked first, because what somebody wrote down is the only source that can know
+                    why a value matters and what an administrator will get wrong about it. Everything
+                    below is derived from what Magento happens to expose and cannot know either.
+                -->
+                <item name="xml" sortOrder="10" xsi:type="object">Hryvinskyi\EmailTemplateEditor\Model\Knowledge\XmlKnowledgeProvider</item>
+                <item name="config_path" sortOrder="20" xsi:type="object">Hryvinskyi\EmailTemplateEditor\Model\Knowledge\ConfigPathKnowledgeProvider</item>
+                <item name="custom_variable" sortOrder="30" xsi:type="object">Hryvinskyi\EmailTemplateEditor\Model\Knowledge\CustomVariableKnowledgeProvider</item>
+                <!--
+                    The safety net, and so the last source asked: a template's own declarations
+                    record a label and nothing else, so anything written by hand or worked out from
+                    what Magento knows has something better to say and answers first.
+                -->
+                <item name="template_vars" sortOrder="90" xsi:type="object">Hryvinskyi\EmailTemplateEditor\Model\Knowledge\TemplateVarsKnowledgeProvider</item>
+            </argument>
+            <!--
+                Affordance strategies. The last one supports every origin, which is what lets the
+                registry promise that an entry always comes back with something the administrator
+                can act on.
+            -->
+            <argument name="affordanceResolvers" xsi:type="array">
+                <item name="config" sortOrder="10" xsi:type="object">Hryvinskyi\EmailTemplateEditor\Model\Knowledge\Affordance\ConfigAffordanceResolver</item>
+                <item name="custom_variable" sortOrder="20" xsi:type="object">Hryvinskyi\EmailTemplateEditor\Model\Knowledge\Affordance\CustomVariableAffordanceResolver</item>
+                <item name="instruction" sortOrder="900" xsi:type="object">Hryvinskyi\EmailTemplateEditor\Model\Knowledge\Affordance\InstructionAffordanceResolver</item>
+            </argument>
+            <!--
+                What a directive of each kind is formatted with when it carries no modifier chain at
+                all. An email template's {{var}} reaches the filter through the legacy directive
+                path, where the whole interior is split on the first pipe and the fallback modifier
+                is applied only when there is no pipe to split on, so an empty chain means escaped
+                rather than unformatted. An entry the base does not document still has to say that,
+                or a chain editor would offer to remove protection nobody knew was there.
+            -->
+            <argument name="defaultModifiers" xsi:type="array">
+                <item name="var" xsi:type="string">escape</item>
+            </argument>
+        </arguments>
+    </type>
+    <!--
+        Variable Knowledge: the modifier vocabulary the editor may offer.
+
+        Two implemented names is the whole set, and that is not an omission. Both of the facts that
+        decide it live in Magento and both have to be re-read before this set is changed.
+
+        Magento\Email\Model\Template\Filter::$_modifiers starts as nl2br alone and gains escape when
+        the filter is constructed. Filter::applyModifiers walks a chain and looks each name up in
+        that array, skipping in silence any name that is not a key. That silence is the whole of why
+        raw works, and why any other unrecognised name works identically.
+
+        The directiveProcessors argument of Magento\Framework\Filter\Template in
+        vendor/magento/module-email/etc/di.xml lists depend, if, template and legacy, and no var
+        processor at all. That absence is why {{var}} reaches Filter::varDirective, where the whole
+        directive interior is split on the first pipe and the fallback escape applies only when
+        there is no pipe to split on. The framework's own var processor, the one content pages and
+        widgets go through, applies no default escape whatsoever, so none of this is a general truth
+        about Magento. Should a module ever register a var processor for the email filter, the
+        default escaping story changes and these descriptors begin describing something that no
+        longer happens.
+    -->
+    <virtualType name="Hryvinskyi\EmailTemplateEditor\Model\Knowledge\Modifier\EscapeDescriptor"
+                 type="Hryvinskyi\EmailTemplateEditor\Model\Knowledge\Data\ModifierDescriptor">
+        <arguments>
+            <argument name="name" xsi:type="string">escape</argument>
+            <argument name="label" xsi:type="string" translate="true">Escape</argument>
+            <argument name="description" xsi:type="string" translate="true">Escapes the value before it is written into the message, and is what a {{var}} directive gets when it carries no modifier chain at all. The type is compared exactly as written: only html, htmlentities and url are recognised, and any other spelling, HTML among them, is not an error but a value returned untouched, so the message receives it unescaped.</argument>
+            <argument name="implemented" xsi:type="boolean">true</argument>
+            <argument name="argumentSpec" xsi:type="array">
+                <item name="type" xsi:type="array">
+                    <item name="name" xsi:type="string">type</item>
+                    <!-- Spelled as the filter compares them, since it compares them exactly. -->
+                    <item name="options" xsi:type="array">
+                        <item name="html" xsi:type="string">html</item>
+                        <item name="htmlentities" xsi:type="string">htmlentities</item>
+                        <item name="url" xsi:type="string">url</item>
+                    </item>
+                    <item name="default" xsi:type="string">html</item>
+                </item>
+            </argument>
+        </arguments>
+    </virtualType>
+    <virtualType name="Hryvinskyi\EmailTemplateEditor\Model\Knowledge\Modifier\NewlineToBreakDescriptor"
+                 type="Hryvinskyi\EmailTemplateEditor\Model\Knowledge\Data\ModifierDescriptor">
+        <arguments>
+            <argument name="name" xsi:type="string">nl2br</argument>
+            <argument name="label" xsi:type="string" translate="true">Newlines to &lt;br&gt;</argument>
+            <argument name="description" xsi:type="string" translate="true">Turns the newline characters in a value into line break tags. The filter registers this name without a callback of its own, so what runs is PHP's own nl2br function, called with the value and nothing else. It takes no arguments, and a newline filter registered elsewhere in Magento is not what an email template uses.</argument>
+            <argument name="implemented" xsi:type="boolean">true</argument>
+        </arguments>
+    </virtualType>
+    <virtualType name="Hryvinskyi\EmailTemplateEditor\Model\Knowledge\Modifier\RawDescriptor"
+                 type="Hryvinskyi\EmailTemplateEditor\Model\Knowledge\Data\ModifierDescriptor">
+        <arguments>
+            <argument name="name" xsi:type="string">raw</argument>
+            <argument name="label" xsi:type="string" translate="true">Raw (no escaping)</argument>
+            <argument name="description" xsi:type="string" translate="true">Nothing is implemented for this name. It switches off the escaping a {{var}} directive would otherwise get purely because the filter skips any modifier name it does not hold, and any other unknown name would do the same. It is the established way of asking for a value to be written as it is, which is why it is offered, but it is a convention rather than a step that runs.</argument>
+            <argument name="implemented" xsi:type="boolean">false</argument>
+        </arguments>
+    </virtualType>
+    <type name="Hryvinskyi\EmailTemplateEditor\Model\Knowledge\ModifierRegistry">
+        <arguments>
+            <!--
+                The vocabulary, in the order it is offered. A module that registers a real filter can
+                publish a descriptor for it beside these; the registry refuses an empty pool and a
+                name published twice, so a merge that lost or doubled one fails loudly rather than
+                leaving an editor that offers no formatting or answers with whichever arrived last.
+            -->
+            <argument name="descriptors" xsi:type="array">
+                <item name="escape" sortOrder="10" xsi:type="object">Hryvinskyi\EmailTemplateEditor\Model\Knowledge\Modifier\EscapeDescriptor</item>
+                <item name="nl2br" sortOrder="20" xsi:type="object">Hryvinskyi\EmailTemplateEditor\Model\Knowledge\Modifier\NewlineToBreakDescriptor</item>
+                <item name="raw" sortOrder="30" xsi:type="object">Hryvinskyi\EmailTemplateEditor\Model\Knowledge\Modifier\RawDescriptor</item>
+            </argument>
+        </arguments>
+    </type>
+    <!--
+        Variable Knowledge: what a reference currently renders as.
+
+        ReferenceValueStrategyInterface has no preference on purpose: it is only ever a pool member,
+        chosen by asking each one whether it claims the origin, and never built by name.
+    -->
+    <preference for="Hryvinskyi\EmailTemplateEditor\Api\Knowledge\ReferenceValueResolverInterface"
+                type="Hryvinskyi\EmailTemplateEditor\Model\Knowledge\ReferenceValueResolver"/>
+
+    <type name="Hryvinskyi\EmailTemplateEditor\Model\Knowledge\ReferenceValueResolver">
+        <arguments>
+            <!--
+                Readers, in the order they are asked; the first one claiming the entry's origin
+                answers. The order is the sortOrder attribute on each item and never where the item
+                sits in this file, because an array argument is sorted by
+                Magento\Framework\ObjectManager\Helper\SortItems, which
+                Magento\Framework\Data\Argument\Interpreter\ArrayType applies before the array
+                reaches the constructor. File order could not carry it: items for one pool are
+                written in several places that cannot see one another and, once modules are merged,
+                the resulting order is module load order rather than anyone's intent.
+
+                The last one claims every origin, which is what lets the resolver promise that a
+                reference is always answered - if only to report that nothing could be read. The
+                gaps in the numbering are deliberate: another module slots a reader of its own in
+                between without editing anything here.
+            -->
+            <argument name="strategies" xsi:type="array">
+                <item name="config" sortOrder="10" xsi:type="object">Hryvinskyi\EmailTemplateEditor\Model\Knowledge\Value\ConfigValueStrategy</item>
+                <item name="custom_variable" sortOrder="20" xsi:type="object">Hryvinskyi\EmailTemplateEditor\Model\Knowledge\Value\CustomVariableValueStrategy</item>
+                <item name="mock" sortOrder="30" xsi:type="object">Hryvinskyi\EmailTemplateEditor\Model\Knowledge\Value\MockValueStrategy</item>
+                <item name="translated_message" sortOrder="40" xsi:type="object">Hryvinskyi\EmailTemplateEditor\Model\Knowledge\Value\TranslatedMessageValueStrategy</item>
+                <item name="unavailable" sortOrder="900" xsi:type="object">Hryvinskyi\EmailTemplateEditor\Model\Knowledge\Value\UnavailableValueStrategy</item>
+            </argument>
+            <argument name="logger" xsi:type="object">Hryvinskyi\EmailTemplateEditor\Logger\Logger</argument>
+        </arguments>
+    </type>
+    <!--
+        Variable Knowledge: the knowledge somebody wrote down.
+
+        email_variables.xml is a merged configuration like any other, so a module adds entries by
+        shipping a file of that name and nothing here changes. The reader below finds every one of
+        them, checks each against this module's schema, and hands the merged document to the
+        converter, which files the entries under the canonical reference the parser produces.
+
+        The merge matches variables on kind and expression together, which is what makes those two
+        the identity of an entry rather than only its lookup key. Parameters and choices carry their
+        own identifying attribute so a contribution replaces the one it means to; caveats and steps
+        carry an optional id, which is worth setting on any that are contributed to a variable
+        another module already describes, because without one they cannot be told apart from the
+        caveats already there.
+    -->
+    <virtualType name="Hryvinskyi\EmailTemplateEditor\Model\Knowledge\Config\Reader"
+                 type="Magento\Framework\Config\Reader\Filesystem">
+        <arguments>
+            <argument name="fileName" xsi:type="string">email_variables.xml</argument>
+            <argument name="converter" xsi:type="object">Hryvinskyi\EmailTemplateEditor\Model\Knowledge\Config\Converter</argument>
+            <argument name="schemaLocator" xsi:type="object">Hryvinskyi\EmailTemplateEditor\Model\Knowledge\Config\SchemaLocator</argument>
+            <argument name="idAttributes" xsi:type="array">
+                <item name="/variables/variable" xsi:type="array">
+                    <item name="kind" xsi:type="string">kind</item>
+                    <item name="expression" xsi:type="string">expression</item>
+                </item>
+                <item name="/variables/variable/caveat" xsi:type="string">id</item>
+                <item name="/variables/variable/affordance/param" xsi:type="string">name</item>
+                <item name="/variables/variable/affordance/step" xsi:type="string">id</item>
+                <item name="/variables/variable/affordance/option" xsi:type="string">value</item>
+            </argument>
+        </arguments>
+    </virtualType>
+
+    <type name="Hryvinskyi\EmailTemplateEditor\Model\Knowledge\Config\Converter">
+        <arguments>
+            <argument name="logger" xsi:type="object">Hryvinskyi\EmailTemplateEditor\Logger\Logger</argument>
+        </arguments>
+    </type>
+
+    <!--
+        Read once and then served from the configuration cache, which is where the reader's whole
+        answer lands. A change to any module's email_variables.xml is therefore invisible until that
+        cache is flushed - and so is the report of a contribution the converter refused, because the
+        converter only runs when the cache is cold.
+    -->
+    <type name="Hryvinskyi\EmailTemplateEditor\Model\Knowledge\Config\Data">
+        <arguments>
+            <argument name="reader" xsi:type="object">Hryvinskyi\EmailTemplateEditor\Model\Knowledge\Config\Reader</argument>
+            <argument name="cacheId" xsi:type="string">hryvinskyi_email_variables</argument>
+        </arguments>
+    </type>
+
+    <type name="Hryvinskyi\EmailTemplateEditor\Model\Knowledge\XmlKnowledgeProvider">
+        <arguments>
+            <argument name="knowledgeConfig" xsi:type="object">Hryvinskyi\EmailTemplateEditor\Model\Knowledge\Config\Data</argument>
+            <!--
+                The same fact about the template filter the registry is told, stated again because
+                this source builds entries of its own and an entry has to carry it whichever part of
+                the base built it. An email template's {{var}} reaches the filter through the legacy
+                directive path, where the whole interior is split on the first pipe and the fallback
+                modifier applies only when there is no pipe to split on, so an empty chain means
+                escaped rather than unformatted. A chain editor told otherwise would offer to remove
+                protection nobody knew was there.
+            -->
+            <argument name="defaultModifiers" xsi:type="array">
+                <item name="var" xsi:type="string">escape</item>
+            </argument>
+        </arguments>
+    </type>
+    <!--
+        Variable Knowledge: changing the value a directive reads, at the place it reads it from.
+
+        This is the only part of the context that leaves anything behind, so what it admits is spelled
+        out here as plainly as in the code.
+
+        Whether a {{config}} directive can read a path at all is its own service, separate from
+        whether that path may be changed. The two questions have different answers - a value can be
+        perfectly readable and still be one nobody should edit from an email editor - and answering
+        the looser question with the stricter predicate would hide the current value of every path
+        that is deliberately not editable.
+
+        ReferenceValueWriteStrategyInterface has no preference on purpose: it is only ever a pool
+        member, chosen by asking each one whether it claims the origin, and never built by name.
+    -->
+    <preference for="Hryvinskyi\EmailTemplateEditor\Api\Knowledge\ConfigPathReadabilityInterface"
+                type="Hryvinskyi\EmailTemplateEditor\Model\Knowledge\ConfigPathReadability"/>
+    <preference for="Hryvinskyi\EmailTemplateEditor\Api\Knowledge\WriteAuthorizationInterface"
+                type="Hryvinskyi\EmailTemplateEditor\Model\Knowledge\WriteAuthorization"/>
+    <preference for="Hryvinskyi\EmailTemplateEditor\Api\Knowledge\ReferenceValueWriterInterface"
+                type="Hryvinskyi\EmailTemplateEditor\Model\Knowledge\ReferenceValueWriter"/>
+
+    <type name="Hryvinskyi\EmailTemplateEditor\Model\Knowledge\ReferenceValueWriter">
+        <arguments>
+            <!--
+                Writers, in the order they are asked; the first one claiming the entry's origin
+                writes it. The order is the sortOrder attribute on each item and never where the item
+                sits in this file, for the same reason it is so for every other pool above.
+
+                This pool alone ends in nothing, and that is the point of it. No member claims every
+                origin, so an origin nothing claims is refused and told so. A member claiming
+                everything would have to do something with a value it does not understand, and both
+                of the candidates - writing it somewhere plausible, or quietly doing nothing - reach
+                the browser looking exactly like a save that worked.
+            -->
+            <argument name="strategies" xsi:type="array">
+                <item name="config" sortOrder="10" xsi:type="object">Hryvinskyi\EmailTemplateEditor\Model\Knowledge\Write\ConfigValueWriteStrategy</item>
+                <item name="custom_variable" sortOrder="20" xsi:type="object">Hryvinskyi\EmailTemplateEditor\Model\Knowledge\Write\CustomVariableValueWriteStrategy</item>
+            </argument>
+        </arguments>
+    </type>
+
+    <type name="Hryvinskyi\EmailTemplateEditor\Model\Knowledge\WriteAuthorization">
+        <arguments>
+            <!--
+                Which permission governs values stored where. A kind absent from this map is refused
+                rather than allowed: an unmapped kind does not mean changing such a value is harmless,
+                it means nobody has yet decided what it would take to be allowed, and the safe reading
+                of "nobody decided" is no. Adding a kind here is therefore a deliberate act, which is
+                the whole intent - the alternative would make every origin kind added in future
+                writable by whoever can open the editor, silently, on the day it is added.
+            -->
+            <argument name="resourcesByOriginKind" xsi:type="array">
+                <item name="config" xsi:type="string">Magento_Config::config</item>
+                <item name="custom_variable" xsi:type="string">Magento_Variable::variable</item>
+            </argument>
+            <!--
+                Kinds whose locator is a store configuration path. For those, the permission declared
+                by the section that owns the path is required as well as the broad one above. A role
+                is normally granted a few configuration sections rather than all of them, and being
+                able to open this editor must not become a way to change a section the role cannot
+                open on the configuration page itself.
+            -->
+            <argument name="configPathKinds" xsi:type="array">
+                <item name="config" xsi:type="string">config</item>
+            </argument>
+        </arguments>
+    </type>
+
+    <!--
+        A way into the configuration table and into the custom variables from a screen nobody would
+        look for one on, so both keep a record of what they changed, in whose name, in this module's
+        own log rather than mixed into the system one.
+    -->
+    <type name="Hryvinskyi\EmailTemplateEditor\Model\Knowledge\Write\ConfigValueWriteStrategy">
+        <arguments>
+            <argument name="logger" xsi:type="object">Hryvinskyi\EmailTemplateEditor\Logger\Logger</argument>
+        </arguments>
+    </type>
+
+    <type name="Hryvinskyi\EmailTemplateEditor\Model\Knowledge\Write\CustomVariableValueWriteStrategy">
+        <arguments>
+            <argument name="logger" xsi:type="object">Hryvinskyi\EmailTemplateEditor\Logger\Logger</argument>
+        </arguments>
+    </type>
+
+    <!--
+        The shape of the answers the knowledge endpoints give. It is a mapper with nothing to
+        configure; it is named here only so that the endpoints depend on the contract rather than on
+        the class that happens to implement it today.
+    -->
+    <preference for="Hryvinskyi\EmailTemplateEditor\Api\Knowledge\KnowledgeSerializerInterface"
+                type="Hryvinskyi\EmailTemplateEditor\Model\Knowledge\KnowledgeSerializer"/>
 </config>

@@ -7,8 +7,8 @@
 define([
     'uiComponent',
     'ko',
-    'uiRegistry'
-], function (Component, ko, registry) {
+    'Hryvinskyi_EmailTemplateEditor/js/email-editor/parent-resolver'
+], function (Component, ko, parentResolver) {
     'use strict';
 
     return Component.extend({
@@ -103,7 +103,7 @@ define([
          * Trigger the parent component's renderPreview method if available.
          */
         refresh: function () {
-            this._getParent(function (parent) {
+            parentResolver.resolve(this, function (parent) {
                 if (typeof parent.renderPreview === 'function') {
                     parent.renderPreview();
                 }
@@ -114,30 +114,10 @@ define([
          * Open the send test email dialog via the parent component.
          */
         sendTestEmail: function () {
-            this._getParent(function (parent) {
+            parentResolver.resolve(this, function (parent) {
                 if (typeof parent.openSendTestEmailDialog === 'function') {
                     parent.openSendTestEmailDialog();
                 }
-            });
-        },
-
-        /**
-         * Resolve the parent component via the registry.
-         *
-         * @param {Function} callback
-         */
-        _getParent: function (callback) {
-            if (this._parentRef) {
-                callback(this._parentRef);
-
-                return;
-            }
-
-            var self = this;
-
-            registry.get(this.parentName, function (parent) {
-                self._parentRef = parent;
-                callback(parent);
             });
         }
     });

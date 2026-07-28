@@ -9,15 +9,13 @@ declare(strict_types=1);
 
 namespace Hryvinskyi\EmailTemplateEditor\Controller\Adminhtml\Theme;
 
-use Hryvinskyi\EmailTemplateEditor\Api\Data\ThemeInterface;
-use Hryvinskyi\EmailTemplateEditor\Api\Data\ThemeInterfaceFactory;
-use Hryvinskyi\EmailTemplateEditor\Api\ThemeJsonValidatorInterface;
-use Hryvinskyi\EmailTemplateEditor\Api\ThemeRepositoryInterface;
+use Hryvinskyi\EmailTemplateEditor\Api\ThemeWriterInterface;
 use Magento\Backend\App\Action;
 use Magento\Backend\App\Action\Context;
 use Magento\Framework\App\Action\HttpPostActionInterface;
 use Magento\Framework\Controller\Result\Json;
 use Magento\Framework\Controller\Result\JsonFactory;
+use Magento\Framework\Exception\LocalizedException;
 
 class Save extends Action implements HttpPostActionInterface
 {
@@ -26,22 +24,21 @@ class Save extends Action implements HttpPostActionInterface
     /**
      * @param Context $context
      * @param JsonFactory $resultJsonFactory
-     * @param ThemeRepositoryInterface $themeRepository
-     * @param ThemeInterfaceFactory $themeFactory
-     * @param ThemeJsonValidatorInterface $themeJsonValidator
+     * @param ThemeWriterInterface $themeWriter
      */
     public function __construct(
         Context $context,
         private readonly JsonFactory $resultJsonFactory,
-        private readonly ThemeRepositoryInterface $themeRepository,
-        private readonly ThemeInterfaceFactory $themeFactory,
-        private readonly ThemeJsonValidatorInterface $themeJsonValidator
+        private readonly ThemeWriterInterface $themeWriter
     ) {
         parent::__construct($context);
     }
 
     /**
-     * Save or update a theme with validated JSON configuration
+     * Create a theme, or update the content of an existing one
+     *
+     * A submitted `store_id` is honoured only when a theme is being created; it is ignored on an
+     * update, because the scope a theme is resolved for is not part of its authored content.
      *
      * @return Json
      */
@@ -55,46 +52,9 @@ class Save extends Action implements HttpPostActionInterface
             $themeCss = (string)$this->getRequest()->getParam('theme_css', '');
             $storeId = (int)$this->getRequest()->getParam('store_id', 0);
 
-            if ($themeId && $name === '') {
-                $theme = $this->themeRepository->getById($themeId);
-                $name = $theme->getName();
-            }
-
-            if ($name === '') {
-                return $resultJson->setData([
-                    'success' => false,
-                    'message' => (string)__('Theme name is required.'),
-                ]);
-            }
-
-            if ($themeCss === '') {
-                return $resultJson->setData([
-                    'success' => false,
-                    'message' => (string)__('Theme CSS is required.'),
-                ]);
-            }
-
-            if (!$this->themeJsonValidator->validate($themeCss)) {
-                $errors = $this->themeJsonValidator->getErrors();
-
-                return $resultJson->setData([
-                    'success' => false,
-                    'message' => (string)__('Invalid theme CSS: %1', implode(', ', $errors)),
-                ]);
-            }
-
-            if ($themeId) {
-                if (!isset($theme)) {
-                    $theme = $this->themeRepository->getById($themeId);
-                }
-            } else {
-                $theme = $this->themeFactory->create();
-            }
-
-            $theme->setName($name);
-            $theme->setThemeCss($themeCss);
-            $theme->setStoreId($storeId);
-            $this->themeRepository->save($theme);
+            $theme = $themeId
+                ? $this->themeWriter->updateContent($themeId, $themeCss, $name)
+                : $this->themeWriter->create($name, $themeCss, $storeId);
 
             return $resultJson->setData([
                 'success' => true,
@@ -107,11 +67,27 @@ class Save extends Action implements HttpPostActionInterface
                 ],
                 'message' => (string)__('Theme saved successfully.'),
             ]);
+        } catch (LocalizedException $e) {
+            // Rejected input, an unknown theme id and a failed save all arrive here already phrased
+            // for the admin.
+            return $this->errorResponse($resultJson, $e->getMessage());
         } catch (\Exception $e) {
-            return $resultJson->setData([
-                'success' => false,
-                'message' => $e->getMessage(),
-            ]);
+            return $this->errorResponse($resultJson, $e->getMessage());
         }
+    }
+
+    /**
+     * Build the failure payload the theme editor expects
+     *
+     * @param Json $resultJson Result object created for this request.
+     * @param string $message Message to surface to the admin.
+     * @return Json
+     */
+    private function errorResponse(Json $resultJson, string $message): Json
+    {
+        return $resultJson->setData([
+            'success' => false,
+            'message' => $message,
+        ]);
     }
 }

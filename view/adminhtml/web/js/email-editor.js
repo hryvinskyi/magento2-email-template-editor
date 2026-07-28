@@ -11,8 +11,9 @@ define([
     'jquery',
     'uiRegistry',
     'Hryvinskyi_EmailTemplateEditor/js/email-editor/tailwind-compiler',
-    'Magento_Ui/js/modal/alert'
-], function (_, Component, ko, $, registry, tailwindCompiler, uiAlert) {
+    'Magento_Ui/js/modal/alert',
+    'mage/translate'
+], function (_, Component, ko, $, registry, tailwindCompiler, uiAlert, $t) {
     'use strict';
 
     return Component.extend({
@@ -33,8 +34,46 @@ define([
         /** @type {number|null} */
         _entitySearchTimer: null,
 
+        /** @type {jQuery.jqXHR|null} Entity search request currently in flight, if any */
+        _entitySearchXhr: null,
+
+        /** @type {number|null} Timer that delays revealing the busy indicator */
+        _busyIndicatorTimer: null,
+
+        /** @type {number|null} Timer that hides the editor-panel scrollbar again after scrolling */
+        _panelLeftScrollTimer: null,
+
+        /**
+         * Milliseconds a request must stay in flight before the busy indicator is shown.
+         *
+         * Short enough that a genuinely slow round trip is reported long before the user
+         * starts wondering, long enough that the fast majority of requests never make the
+         * toolbar flash. Judgement, not a measurement.
+         *
+         * @type {number}
+         */
+        _busyIndicatorDelay: 200,
+
         /** @type {string} */
         _lastTailwindCss: '',
+
+        /** @type {string|null} Theme+content the remembered compile was asked for, null before the first one */
+        _compileKey: null,
+
+        /** @type {jQuery.Promise|null} The compile started for `_compileKey` */
+        _compilePromise: null,
+
+        /**
+         * Milliseconds a persisting action waits for the Tailwind compile of its own content.
+         *
+         * A warm compile costs a few hundred milliseconds, so this is reached only when the
+         * compiler is wedged or the bundle is unreachable. Long enough that a healthy compile
+         * always wins the wait; short enough that a broken one never turns a save into a hang —
+         * saving slightly stale styles is a smaller loss than not saving at all.
+         *
+         * @type {number}
+         */
+        _compileWaitTimeout: 2000,
 
         /** @type {Object} */
         _providerEntitySelectionMap: {},
@@ -54,11 +93,17 @@ define([
         /** @type {boolean} */
         _suppressChangeEvents: false,
 
+        /** @type {boolean} True while a draft-save request is on its way to the server */
+        _saveDraftInFlight: false,
+
         /** @type {Array<jQuery.jqXHR>} */
         _pendingRequests: [],
 
         /** @type {number} Monotonic generation guarding preview rendering against stale responses */
         _previewToken: 0,
+
+        /** @type {number} Monotonic generation guarding entity search results against stale responses */
+        _entitySearchToken: 0,
 
         /** @type {string} */
         _storeStorageKey: 'hryvinskyi_email_editor_store_id',
@@ -74,6 +119,8 @@ define([
 
             this.observe([
                 'isInitialLoading',
+                'busyCount',
+                'busyIndicatorArmed',
                 'currentTemplateId',
                 'currentTemplateStatus',
                 'hasDraft',
@@ -113,6 +160,8 @@ define([
             ]);
 
             this.isInitialLoading(true);
+            this.busyCount(0);
+            this.busyIndicatorArmed(false);
             this.currentTemplateId('');
             this.currentTemplateStatus('');
             this.hasDraft(false);
@@ -161,6 +210,23 @@ define([
 
             this.isReadOnly.subscribe(function () {
                 self.applyReadOnlyState();
+            });
+
+            // "Is anything in flight" is derived from the number of tracked requests, never
+            // toggled per call site: a request finishing while others are still running must
+            // not be able to switch the indicator off while work continues.
+            this.isBusy = ko.computed(function () {
+                return self.busyCount() > 0;
+            });
+
+            this.isBusy.subscribe(function (busy) {
+                self._updateBusyIndicator(busy);
+            });
+
+            // The full-screen overlay already speaks for the very first load, so the toolbar
+            // stays quiet until it is gone rather than saying the same thing twice.
+            this.showBusyIndicator = ko.computed(function () {
+                return self.busyIndicatorArmed() && !self.isInitialLoading();
             });
 
             this._editScheduleEntityId = null;
@@ -312,7 +378,10 @@ define([
                     }
                 });
 
-                $('body').on('themeChange', function () {
+                // Namespaced so destroy() can take it off again: an anonymous handler on
+                // body outlives the component, and a second editor instance would then
+                // render one preview per teardown that ever happened.
+                $('body').on('themeChange.eteEditor', function () {
                     self.schedulePreview();
                 });
             });
@@ -480,12 +549,13 @@ define([
                 self._persistStoreId();
 
                 // Store-view scope decides which override (and which themed default) applies,
-                // so rebuild the template tree for the new store and reload the open template.
-                // Both fall back to the default scope server-side; loadTemplate re-previews.
-                if (self.templateSidebar) {
-                    self.templateSidebar.load(self.getEffectiveStoreId());
-                }
-
+                // so reload the open template and rebuild the tree for the new store. Both fall
+                // back to the default scope server-side; loadTemplate re-previews.
+                //
+                // Order matters: loading a template begins by aborting everything in flight, and
+                // the tree's own request is in flight once it is tracked - so issuing it first
+                // would have it cancelled by the reload that follows, leaving the previous
+                // store's tree on screen.
                 if (self.currentTemplateId()) {
                     if (!self.viewingDefault()) {
                         self._currentEntityId = null;
@@ -493,6 +563,10 @@ define([
                     self.reloadTemplate();
                 } else {
                     self.renderPreview();
+                }
+
+                if (self.templateSidebar) {
+                    self.templateSidebar.load(self.getEffectiveStoreId());
                 }
             });
         },
@@ -808,22 +882,48 @@ define([
          * @return {jQuery.Deferred}
          */
         _ajax: function (url, data, method) {
-            var self = this,
-                xhr;
-
             data = data || {};
             data.form_key = this.formKey;
             data.store_id = this.getEffectiveStoreId();
 
-            xhr = $.ajax({
+            return this.trackRequest($.ajax({
                 url: url,
                 type: method || 'GET',
                 data: data,
                 dataType: 'json',
                 cache: false
-            });
+            }));
+        },
+
+        /**
+         * Register an in-flight request with the editor.
+         *
+         * This is how a child component makes its requests visible to the editor: build the
+         * `$.ajax` call as usual, hand the resulting jqXHR here, and keep chaining
+         * `.done()`/`.fail()` on what comes back. A registered request counts towards the
+         * busy indicator and is reachable by the editor's cancellation sweep; an
+         * unregistered one is invisible to both.
+         *
+         * The argument is returned as-is — never a wrapper, never a new deferred — so the
+         * caller's chaining, `.abort()` and `readyState` all keep working on the real object.
+         *
+         * Named `trackRequest` rather than `track` because the UI component base class
+         * already owns `track()` for declaring tracked (accessor-backed) properties, and
+         * shadowing it would quietly break any property declared that way.
+         *
+         * @param {jQuery.jqXHR} [xhr] - Request to register; anything without a promise
+         *                               interface is handed straight back untouched.
+         * @return {jQuery.jqXHR|*} The very object that was passed in.
+         */
+        trackRequest: function (xhr) {
+            var self = this;
+
+            if (!xhr || typeof xhr.always !== 'function') {
+                return xhr;
+            }
 
             this._pendingRequests.push(xhr);
+            this.busyCount(this.busyCount() + 1);
 
             xhr.always(function () {
                 var idx = self._pendingRequests.indexOf(xhr);
@@ -831,6 +931,8 @@ define([
                 if (idx !== -1) {
                     self._pendingRequests.splice(idx, 1);
                 }
+
+                self.busyCount(Math.max(0, self.busyCount() - 1));
             });
 
             return xhr;
@@ -849,6 +951,46 @@ define([
                     xhr.abort();
                 }
             });
+        },
+
+        /**
+         * Arm or disarm the toolbar busy indicator as work starts and stops.
+         *
+         * Nearly every interaction in the editor fires a request and most of them answer
+         * quickly, so the indicator is only revealed once work has been outstanding long
+         * enough to be worth reporting; a burst of fast requests leaves the toolbar still.
+         * Hiding is immediate — as soon as nothing is in flight, nothing is claimed.
+         *
+         * @param {boolean} busy
+         */
+        _updateBusyIndicator: function (busy) {
+            var self = this;
+
+            this._clearBusyIndicatorTimer();
+
+            if (!busy) {
+                this.busyIndicatorArmed(false);
+
+                return;
+            }
+
+            this._busyIndicatorTimer = setTimeout(function () {
+                self._busyIndicatorTimer = null;
+
+                if (self.isBusy()) {
+                    self.busyIndicatorArmed(true);
+                }
+            }, this._busyIndicatorDelay);
+        },
+
+        /**
+         * Cancel a pending reveal of the busy indicator, if one is scheduled.
+         */
+        _clearBusyIndicatorTimer: function () {
+            if (this._busyIndicatorTimer) {
+                clearTimeout(this._busyIndicatorTimer);
+                this._busyIndicatorTimer = null;
+            }
         },
 
         /**
@@ -957,7 +1099,16 @@ define([
          */
         searchEntities: function (query) {
             var self = this,
-                providerCode = this.selectedProvider() || '';
+                providerCode = this.selectedProvider() || '',
+                token;
+
+            // Typing keeps superseding the search: drop whatever is still in flight so the
+            // browser is not holding a connection open for a query nobody is waiting for.
+            if (this._entitySearchXhr && this._entitySearchXhr.readyState !== 4) {
+                this._entitySearchXhr.abort();
+            }
+
+            this._entitySearchXhr = null;
 
             if (!query || query.length < 2) {
                 this.entityResults([]);
@@ -965,18 +1116,38 @@ define([
                 return;
             }
 
-            this._ajax(this.urls.sampleDataSearchEntities, {
+            // Aborting is best effort — a response already on the wire still arrives. The
+            // generation below is what actually guarantees that only the newest search may
+            // write the dropdown, so results can never lag behind the text in the box.
+            token = ++this._entitySearchToken;
+
+            this._entitySearchXhr = this._ajax(this.urls.sampleDataSearchEntities, {
                 provider_code: providerCode,
                 query: query
             }).done(function (res) {
+                if (token !== self._entitySearchToken) {
+                    return;
+                }
+
                 if (res.success && res.results && res.results.length > 0) {
                     self.entityResults(res.results);
                 } else {
                     self.entityResults([{
                         id: '',
-                        label: 'No results found'
+                        label: $t('No results found')
                     }]);
                 }
+            }).fail(function (xhr, textStatus) {
+                // A search we cancelled ourselves is not a failure the user should hear
+                // about — the search that replaced it owns the dropdown now.
+                if (textStatus === 'abort' || token !== self._entitySearchToken) {
+                    return;
+                }
+
+                self.entityResults([{
+                    id: '',
+                    label: $t('Search failed. Please try again.')
+                }]);
             });
         },
 
@@ -1019,6 +1190,16 @@ define([
             }
 
             this._abortPendingRequests();
+
+            // Disarm the auto-save before anything identifies the editor with the
+            // incoming template. The identifier and entity id change on the next lines
+            // but the content is only replaced when the response lands, so an auto-save
+            // firing in between would post the outgoing template's body under the
+            // incoming template's identifier. Waiting for success is too late.
+            if (this.draftManager) {
+                this.draftManager.markClean();
+            }
+
             this.setStatus('saving', 'LOADING');
             this.currentTemplateId(identifier);
             this._currentEntityId = entityId || null;
@@ -1175,29 +1356,151 @@ define([
         },
 
         /**
-         * Render the preview. Sends preview request immediately using
-         * cached Tailwind CSS, and recompiles Tailwind in the background.
+         * Ensure Tailwind CSS has been compiled for exactly this content, and hand back
+         * the promise that carries it.
+         *
+         * The stored Tailwind CSS is not a field the editor happens to know, it is a
+         * function of the template content it is stored beside. Asking for a compile of
+         * the content about to be used is therefore the only way to be sure the two
+         * belong together; reading whatever the last render happened to produce is right
+         * only by coincidence, and the coincidence fails exactly on the paths that have no
+         * debounce in front of them.
+         *
+         * Keyed on theme plus content, which is what the compiler keys its own cache on,
+         * so a render and a save asking for the same revision share a single compile
+         * instead of tearing each other's iframe down, and so asking again for content
+         * that has not changed costs nothing.
+         *
+         * The single assignment of the last known Tailwind CSS lives here, so there is one
+         * place where "the CSS the editor believes in" can change and one rule for when it
+         * may: the answer has to be for the content currently being asked about, and it has
+         * to come from a compiler that actually compiled something.
+         *
+         * @param {string} content - Template HTML to compile utility classes for.
+         * @return {jQuery.Promise} Resolves with the CSS string for `content`.
+         */
+        _compileTailwind: function (content) {
+            var self = this,
+                html = content || '',
+                themeCss = this.themeEditor ? this.themeEditor.getThemeCss() : '',
+                key,
+                promise;
+
+            // Push the theme before the key is built: this is the only place the editor's
+            // theme reaches the compiler, and a compile started without it would be keyed
+            // on one theme and generated from another.
+            if (this.themeEditor) {
+                tailwindCompiler.setTheme(themeCss);
+            }
+
+            key = themeCss + '\0' + html;
+
+            if (this._compileKey === key && this._compilePromise) {
+                return this._compilePromise;
+            }
+
+            // Starting a compile for different content destroys the iframe that any older
+            // compile is still polling, and that older compile then resolves empty. Retiring
+            // the render token here makes the older render return early rather than blank the
+            // preview on its way out. Safe to do: a different key means the user typed within
+            // the debounce window, so a render of the new revision is already armed.
+            this._previewToken++;
+            this._compileKey = key;
+
+            promise = tailwindCompiler.compile(html);
+            this._compilePromise = promise;
+
+            promise.done(function (css) {
+                // Defensive about the type as well as the value: this is the last point at
+                // which anything other than a string can be stopped from reaching a stored
+                // stylesheet and, from there, a delivered email.
+                var twString = typeof css === 'string' ? css : '';
+
+                if (self._compileKey !== key) {
+                    return;
+                }
+
+                // An empty result from a compiler that failed is not a template without
+                // utility classes - it is no answer at all. Overwriting a good stylesheet
+                // with it would persist the blank into the next save, so the last known-good
+                // value is kept instead and the next successful compile replaces it.
+                if (typeof tailwindCompiler.hasCompileFailed === 'function'
+                    && tailwindCompiler.hasCompileFailed()) {
+                    return;
+                }
+
+                if (twString !== self._lastTailwindCss) {
+                    self._lastTailwindCss = twString;
+                    self.tailwindCssOutput(twString);
+                }
+            });
+
+            return promise;
+        },
+
+        /**
+         * Run `callback` once the Tailwind CSS for `content` is available, or once the
+         * bounded wait has expired - whichever happens first.
+         *
+         * A compile that has already produced this content's CSS settles the gate
+         * synchronously, so the common case gains no tick and no delay. A compile that
+         * fails settles it too, because a failure is an answer. Only a compile that never
+         * settles at all reaches the timeout, and then the action still goes ahead with
+         * whatever CSS is current: an action delayed by a wedged compiler is a worse
+         * outcome than one carrying slightly older styles, and an action that never
+         * happens is worse than both.
+         *
+         * @param {string} content - Template HTML the caller is about to persist or send.
+         * @param {Function} callback - Invoked with no arguments once the wait is over.
+         * @return {void}
+         */
+        _withCompiledCss: function (content, callback) {
+            var self = this,
+                gate = $.Deferred(),
+                promise = this._compileTailwind(content),
+                timer;
+
+            timer = setTimeout(function () {
+                if (window.console && typeof window.console.warn === 'function') {
+                    window.console.warn(
+                        '[EmailTemplateEditor] Tailwind compile did not finish within ' +
+                        self._compileWaitTimeout + 'ms; continuing with the last known CSS.'
+                    );
+                }
+
+                gate.resolve();
+            }, this._compileWaitTimeout);
+
+            if (promise && typeof promise.always === 'function') {
+                // Resolving the gate a second time is a no-op: a Deferred locks on its first
+                // settle, so the timer and the compile cannot both take effect.
+                promise.always(function () {
+                    clearTimeout(timer);
+                    gate.resolve();
+                });
+            } else {
+                clearTimeout(timer);
+                gate.resolve();
+            }
+
+            gate.done(callback);
+        },
+
+        /**
+         * Render the preview once the Tailwind CSS for the current content is available.
          */
         renderPreview: function () {
             var self = this,
                 content = this.templateEditor ? this.templateEditor.getValue() : '',
+                promise,
                 token;
 
             if (!content) {
                 return;
             }
 
-            // Tag this render so the eventual preview response can be matched against the
-            // latest selection. Fast-switching templates starts a new render each time;
-            // only the newest one may touch the preview.
-            token = ++this._previewToken;
-
             if (this.previewPanel) {
                 this.previewPanel.showLoading();
-            }
-
-            if (this.themeEditor) {
-                tailwindCompiler.setTheme(this.themeEditor.getThemeCss());
             }
 
             // Single-fire: wait for the Tailwind compile before sending the preview AJAX.
@@ -1208,15 +1511,16 @@ define([
             // `bg-white` for `bg-black`). Waiting for the compiler removes that flicker;
             // the compile fast-paths when neither content nor theme changed, so the
             // common "edit text, classes unchanged" case still feels instant.
-            tailwindCompiler.compile(content).done(function (twCss) {
+            //
+            // The render is tagged after the compile is requested, never before: requesting
+            // a compile for new content retires the token of any render still waiting on the
+            // old one, and the newest render has to end up owning the newest token.
+            promise = this._compileTailwind(content);
+            token = ++this._previewToken;
+
+            promise.done(function () {
                 if (token !== self._previewToken) {
                     return;
-                }
-
-                var twString = twCss || '';
-                if (twString !== self._lastTailwindCss) {
-                    self._lastTailwindCss = twString;
-                    self.tailwindCssOutput(twString);
                 }
 
                 self._sendPreviewRequest(content, token);
@@ -1502,6 +1806,56 @@ define([
         },
 
         /**
+         * Read the revision a save may claim to have stored, given what its CSS was compiled for.
+         *
+         * Waiting for the compile opens a window in which the user can keep typing. When
+         * that happens the payload carries the newer content while the stylesheet beside it
+         * was compiled for the older one — the pair is already mismatched by the time it is
+         * built, and there is nothing this save can do about it.
+         *
+         * What it can do is refuse to claim the revision. Reporting one would match, disarm
+         * the pending auto-save, and leave the mismatched pair stored until the next
+         * keystroke; withholding it leaves that auto-save armed, so a matching pair is
+         * written one interval later. The draft manager treats an undeterminable revision as
+         * "save again" for exactly this reason.
+         *
+         * Must still be read on the line directly above `getSaveData()` — see below.
+         *
+         * @param {string} compiledContent - The content the awaited compile was asked for.
+         * @return {number|undefined} The current revision, or undefined when the payload has
+         *                            already moved past the stylesheet compiled for it.
+         */
+        _generationForCompiledContent: function (compiledContent) {
+            var current = this.templateEditor ? this.templateEditor.getValue() : '';
+
+            if (current !== compiledContent) {
+                return undefined;
+            }
+
+            return this._captureDirtyGeneration();
+        },
+
+        /**
+         * Read the revision of the editor that the payload about to be built belongs to.
+         *
+         * The value is handed back to the draft manager once the request has succeeded,
+         * so that it only reports the editor clean if no edit has arrived meanwhile.
+         *
+         * This must be read in the same synchronous step as `getSaveData()`, on the line
+         * directly above it, and nothing may ever be inserted between the two: read the
+         * revision earlier than the content and the save reports clean for a revision it
+         * did not send, so the editor keeps saving the same state again; read it later
+         * and it reports clean for an edit that was never sent, cancelling that edit's
+         * auto-save and losing it.
+         *
+         * @return {number|undefined} The current revision, or undefined while there is no
+         *                            draft manager to be clean about.
+         */
+        _captureDirtyGeneration: function () {
+            return this.draftManager ? this.draftManager.getGeneration() : undefined;
+        },
+
+        /**
          * Collect the current state of all editors into a single data object for saving.
          *
          * @return {Object}
@@ -1551,8 +1905,8 @@ define([
          */
         saveDraft: function (asNew) {
             var self = this,
-                data,
-                forkFromPublished;
+                content = this.templateEditor ? this.templateEditor.getValue() : '',
+                templateId;
 
             // Read-only means the published (live) version is being viewed while a
             // separate working draft exists. Saving here must not touch that draft, so
@@ -1561,20 +1915,83 @@ define([
                 return;
             }
 
-            // A "published" status means the loaded override is the live one. Saving must
-            // not overwrite it in place, so fork the edits into a separate draft instead.
-            forkFromPublished = this.currentTemplateStatus() === 'published';
+            // One save at a time. A second request sent while the first is still in
+            // flight would carry the entity id the first one has not returned yet, and
+            // the server would answer by creating a second draft row for a single edit.
+            // Re-arming the auto-save retries once the outstanding answer is in; the
+            // state waiting to be saved is not lost, only deferred.
+            if (this._saveDraftInFlight) {
+                if (this.draftManager) {
+                    this.draftManager.reschedule();
+                }
+
+                return;
+            }
+
+            templateId = this.currentTemplateId();
 
             this.setStatus('saving', 'SAVING DRAFT');
 
-            data = this.getSaveData();
-            data.status = 'draft';
+            // Claimed before the wait for the compile, not after it: the wait is time in
+            // which a second save can be entered, and a save that slipped past this flag
+            // while the first one was still waiting would reach the server with the same
+            // not-yet-assigned entity id and be answered with a second draft row.
+            this._saveDraftInFlight = true;
 
-            // Drop the published override id (or force a brand-new draft) so the server
-            // writes to the working draft rather than the live published row.
-            if (asNew || forkFromPublished) {
-                delete data.entity_id;
-            }
+            this._withCompiledCss(content, function () {
+                var data,
+                    generation,
+                    forkFromPublished;
+
+                // The editor identifies itself with a new template the moment one is
+                // selected, but only shows that template's body once the load answers.
+                // A save that resumed after such a switch would post the body it was
+                // started for under the name of the template that replaced it, so it
+                // gives up instead — and says nothing about being clean, because the
+                // state it was carrying was never stored anywhere.
+                if (self.currentTemplateId() !== templateId) {
+                    self._saveDraftInFlight = false;
+
+                    return;
+                }
+
+                // A "published" status means the loaded override is the live one. Saving
+                // must not overwrite it in place, so fork the edits into a separate draft.
+                forkFromPublished = self.currentTemplateStatus() === 'published';
+
+                // Revision and payload are read together, on adjacent lines, and nothing may
+                // be placed between them — see _captureDirtyGeneration for what each of the
+                // two possible orderings breaks.
+                generation = self._generationForCompiledContent(content);
+                data = self.getSaveData();
+                data.status = 'draft';
+
+                // Drop the published override id (or force a brand-new draft) so the server
+                // writes to the working draft rather than the live published row.
+                if (asNew || forkFromPublished) {
+                    delete data.entity_id;
+                }
+
+                self._sendDraftSave(data, generation, forkFromPublished);
+            });
+        },
+
+        /**
+         * Send a draft-save request and apply its outcome to the editor.
+         *
+         * Split out of {@link saveDraft} so the save's own bookkeeping - the in-flight
+         * claim, the revision, the fork decision - is all made in one synchronous step
+         * before this is called, and nothing here has to re-read editor state that may
+         * have moved on in the meantime.
+         *
+         * @param {Object} data - Payload already built by getSaveData().
+         * @param {number|undefined} generation - Revision the payload was read at.
+         * @param {boolean} forkFromPublished - Whether the save forks the live override into a draft.
+         * @return {void}
+         * @private
+         */
+        _sendDraftSave: function (data, generation, forkFromPublished) {
+            var self = this;
 
             this._ajax(this.urls.saveDraft, data, 'POST').done(function (res) {
                 if (res.success) {
@@ -1596,7 +2013,7 @@ define([
                     }
 
                     if (self.draftManager) {
-                        self.draftManager.markClean();
+                        self.draftManager.markClean(generation);
                         self.draftManager.updateSavedTime();
                     }
 
@@ -1617,13 +2034,22 @@ define([
                         content: res.message || $.mage.__('An error occurred while saving the draft.')
                     });
                 }
-            }).fail(function () {
+            }).fail(function (xhr, textStatus) {
+                // A save we aborted ourselves (switching template fires
+                // _abortPendingRequests) is not a network failure and must not raise a
+                // blocking alert over a template the user has already left.
+                if (textStatus === 'abort') {
+                    return;
+                }
+
                 self.setStatus('error', 'ERROR');
                 self.statusBarText('Failed to save draft');
                 uiAlert({
                     title: $.mage.__('Save Failed'),
                     content: $.mage.__('A network error occurred while saving the draft. Please try again.')
                 });
+            }).always(function () {
+                self._saveDraftInFlight = false;
             });
         },
 
@@ -1651,51 +2077,90 @@ define([
 
                 self.setStatus('saving', 'CREATING DRAFT');
 
-                var data = self.getSaveData();
+                // The content on screen was just replaced with the template's default, so
+                // the CSS restored from the previous override describes something that is
+                // no longer there. Compiling the content that is actually about to be
+                // stored is what makes the two match.
+                var defaultContent = self.templateEditor ? self.templateEditor.getValue() : '';
 
-                data.status = 'draft';
-                data.force_new = 1;
-                data.draft_name = res.template.label || identifier;
-                delete data.entity_id;
-
-                self._ajax(self.urls.saveDraft, data, 'POST').done(function (saveRes) {
-                    if (saveRes.success) {
-                        // The new draft is a real editable override, not the read-only
-                        // default that was on screen, so leave default-view mode; otherwise
-                        // the toolbar keeps hiding the draft actions (Publish/Discard) until
-                        // the draft is manually re-selected in the sidebar.
-                        self.viewingDefault(false);
-                        self.currentTemplateStatus('draft');
-                        self.hasDraft(true);
-                        self._currentEntityId = saveRes.entity_id;
-                        self.updateBadges();
-                        self.setStatus('ready', 'DRAFT CREATED');
-
-                        if (self.templateSidebar) {
-                            self.templateSidebar.refresh().done(function () {
-                                self.templateSidebar.activeOverrideId(saveRes.entity_id);
-                                self.templateSidebar.expandTemplate(identifier);
-                            });
+                self._withCompiledCss(
+                    defaultContent,
+                    function () {
+                        if (self.currentTemplateId() !== identifier) {
+                            return;
                         }
 
-                        if (self.draftManager) {
-                            self.draftManager.markClean();
-                            self.draftManager.updateSavedTime();
-                        }
+                        // Revision and payload are read together, on adjacent lines, and
+                        // nothing may be placed between them — see _captureDirtyGeneration.
+                        var generation = self._generationForCompiledContent(defaultContent);
+                        var data = self.getSaveData();
 
-                        self.statusBarText('New draft created');
+                        data.status = 'draft';
+                        data.force_new = 1;
+                        data.draft_name = res.template.label || identifier;
+                        delete data.entity_id;
 
-                        setTimeout(function () {
-                            self.setStatus('ready');
-                        }, 2000);
-                    } else {
-                        self.setStatus('error', 'ERROR');
-                        self.statusBarText(saveRes.message || 'Failed to create draft');
+                        self._sendNewDraftSave(data, generation, identifier);
                     }
-                }).fail(function () {
+                );
+            });
+        },
+
+        /**
+         * Send the create-a-new-draft request and apply its outcome to the editor.
+         *
+         * @param {Object} data - Payload already built by getSaveData().
+         * @param {number|undefined} generation - Revision the payload was read at.
+         * @param {string} identifier - Template the new draft belongs to.
+         * @return {void}
+         * @private
+         */
+        _sendNewDraftSave: function (data, generation, identifier) {
+            var self = this;
+
+            this._ajax(this.urls.saveDraft, data, 'POST').done(function (saveRes) {
+                if (saveRes.success) {
+                    // The new draft is a real editable override, not the read-only
+                    // default that was on screen, so leave default-view mode; otherwise
+                    // the toolbar keeps hiding the draft actions (Publish/Discard) until
+                    // the draft is manually re-selected in the sidebar.
+                    self.viewingDefault(false);
+                    self.currentTemplateStatus('draft');
+                    self.hasDraft(true);
+                    self._currentEntityId = saveRes.entity_id;
+                    self.updateBadges();
+                    self.setStatus('ready', 'DRAFT CREATED');
+
+                    if (self.templateSidebar) {
+                        self.templateSidebar.refresh().done(function () {
+                            self.templateSidebar.activeOverrideId(saveRes.entity_id);
+                            self.templateSidebar.expandTemplate(identifier);
+                        });
+                    }
+
+                    if (self.draftManager) {
+                        self.draftManager.markClean(generation);
+                        self.draftManager.updateSavedTime();
+                    }
+
+                    self.statusBarText('New draft created');
+
+                    setTimeout(function () {
+                        self.setStatus('ready');
+                    }, 2000);
+                } else {
                     self.setStatus('error', 'ERROR');
-                    self.statusBarText('Failed to create draft');
-                });
+                    self.statusBarText(saveRes.message || 'Failed to create draft');
+                }
+            }).fail(function (xhr, textStatus) {
+                // Aborted by a template switch rather than failed — the editor has
+                // already moved on, so leave its status to the load that replaced us.
+                if (textStatus === 'abort') {
+                    return;
+                }
+
+                self.setStatus('error', 'ERROR');
+                self.statusBarText('Failed to create draft');
             });
         },
 
@@ -1706,16 +2171,83 @@ define([
          */
         publishTemplate: function (comment) {
             var self = this,
-                data;
+                content = this.templateEditor ? this.templateEditor.getValue() : '',
+                templateId;
 
             if (!this.currentTemplateId()) {
                 return;
             }
 
+            templateId = this.currentTemplateId();
+
             this.setStatus('saving', 'PUBLISHING');
 
-            data = this.getSaveData();
-            data.status = 'draft';
+            // Of every path that stores Tailwind CSS this is the one whose result is put
+            // in front of customers, so it is the one that may least afford to guess.
+            this._withCompiledCss(content, function () {
+                var data,
+                    generation;
+
+                // Started for one template, resumed under another: publishing now would
+                // put this body under that name. Give up instead; the load that replaced
+                // this template owns the editor's status from here.
+                if (self.currentTemplateId() !== templateId) {
+                    return;
+                }
+
+                self._warnIfPublishingStaleStyles();
+
+                // Revision and payload are read together, on adjacent lines, and nothing may
+                // be placed between them — see _captureDirtyGeneration. This path holds the
+                // revision across two sequential round trips, so it is the one where an edit
+                // is most likely to arrive before the editor is declared clean.
+                generation = self._generationForCompiledContent(content);
+                data = self.getSaveData();
+                data.status = 'draft';
+
+                self._sendPublish(data, generation, comment);
+            });
+        },
+
+        /**
+         * Tell the user, without stopping them, that the styles about to be published
+         * could not be regenerated.
+         *
+         * The compiler could not produce a stylesheet for the current content, so what is
+         * being published is the last one it managed to produce - correct for an earlier
+         * revision of the template, and possibly missing utility classes added since.
+         * Refusing to publish over this would strand an administrator whose only problem
+         * is an unreachable script, and the previous stylesheet is usually still right, so
+         * the publish goes ahead and the risk is stated plainly instead.
+         *
+         * @return {void}
+         * @private
+         */
+        _warnIfPublishingStaleStyles: function () {
+            if (typeof tailwindCompiler.hasCompileFailed !== 'function'
+                || !tailwindCompiler.hasCompileFailed()) {
+                return;
+            }
+
+            this.statusBarText($t('Publishing with the previously generated Tailwind CSS'));
+
+            uiAlert({
+                title: $t('Styles Could Not Be Regenerated'),
+                content: $t('The Tailwind styles could not be regenerated, so the last stylesheet that was generated successfully is being published instead. Utility classes added since then will have no styles in the delivered email. Check that the editor can reach the Tailwind script, then publish again.')
+            });
+        },
+
+        /**
+         * Save the payload as a draft and, once stored, publish that draft.
+         *
+         * @param {Object} data - Payload already built by getSaveData().
+         * @param {number|undefined} generation - Revision the payload was read at.
+         * @param {string} [comment] - Version comment recorded with the publish.
+         * @return {void}
+         * @private
+         */
+        _sendPublish: function (data, generation, comment) {
+            var self = this;
 
             this._ajax(this.urls.saveDraft, data, 'POST').done(function (saveRes) {
                 if (!saveRes.success || !saveRes.entity_id) {
@@ -1742,7 +2274,7 @@ define([
                         }
 
                         if (self.draftManager) {
-                            self.draftManager.markClean();
+                            self.draftManager.markClean(generation);
                         }
 
                         self.statusBarText('Template published successfully');
@@ -1758,7 +2290,13 @@ define([
                             content: res.message || $.mage.__('An error occurred while publishing the template.')
                         });
                     }
-                }).fail(function () {
+                }).fail(function (xhr, textStatus) {
+                    // Aborted by a template switch rather than failed — the editor has
+                    // already left this template, so say nothing about it.
+                    if (textStatus === 'abort') {
+                        return;
+                    }
+
                     self.setStatus('error', 'ERROR');
                     self.statusBarText('Failed to publish template');
                     uiAlert({
@@ -1766,7 +2304,12 @@ define([
                         content: $.mage.__('A network error occurred while publishing the template. Please try again.')
                     });
                 });
-            }).fail(function () {
+            }).fail(function (xhr, textStatus) {
+                // Aborted by a template switch rather than failed — see above.
+                if (textStatus === 'abort') {
+                    return;
+                }
+
                 self.setStatus('error', 'ERROR');
                 self.statusBarText('Failed to save before publishing');
                 uiAlert({
@@ -2147,13 +2690,16 @@ define([
             this.sendTestEmailFeedback('');
             this.sendTestEmailHasError(false);
 
+            // The whole payload is read here, in one step with the content, so the message
+            // that arrives describes a single state of the editor. Only the Tailwind CSS is
+            // filled in afterwards, because it is the one field that has to be computed.
             data = {
                 recipient_email: email,
                 template_content: content,
                 template_subject: this.subject() || '',
                 template_identifier: this.currentTemplateId(),
                 custom_css: this.customCssEditor ? this.customCssEditor.getValue() : '',
-                tailwind_css: this._lastTailwindCss || '',
+                tailwind_css: '',
                 provider_code: this.selectedProvider() || 'mock',
                 entity_id: this.selectedEntityId ? this.selectedEntityId() : ''
             };
@@ -2162,21 +2708,28 @@ define([
                 data.custom_variables = this.customDataEditor ? this.customDataEditor.getValue() : '';
             }
 
-            this._ajax(this.urls.sendTestEmail, data, 'POST').done(function (res) {
-                self.sendTestEmailSending(false);
+            // This is the message an administrator judges a template by before publishing
+            // it, so it is the worst possible place to be shown styles from an older
+            // revision: the wrong observation is the one that gets acted on.
+            this._withCompiledCss(content, function () {
+                data.tailwind_css = self._lastTailwindCss || '';
 
-                if (res.success) {
-                    self.sendTestEmailFeedback(res.message || $.mage.__('Test email sent successfully.'));
-                    self.sendTestEmailHasError(false);
-                    self.statusBarText(res.message || 'Test email sent');
-                } else {
-                    self.sendTestEmailFeedback(res.message || $.mage.__('Failed to send test email.'));
+                self._ajax(self.urls.sendTestEmail, data, 'POST').done(function (res) {
+                    self.sendTestEmailSending(false);
+
+                    if (res.success) {
+                        self.sendTestEmailFeedback(res.message || $.mage.__('Test email sent successfully.'));
+                        self.sendTestEmailHasError(false);
+                        self.statusBarText(res.message || 'Test email sent');
+                    } else {
+                        self.sendTestEmailFeedback(res.message || $.mage.__('Failed to send test email.'));
+                        self.sendTestEmailHasError(true);
+                    }
+                }).fail(function () {
+                    self.sendTestEmailSending(false);
+                    self.sendTestEmailFeedback($.mage.__('Network error. Please try again.'));
                     self.sendTestEmailHasError(true);
-                }
-            }).fail(function () {
-                self.sendTestEmailSending(false);
-                self.sendTestEmailFeedback($.mage.__('Network error. Please try again.'));
-                self.sendTestEmailHasError(true);
+                });
             });
         },
 
@@ -2362,6 +2915,35 @@ define([
         },
 
         /**
+         * The store views this editor knows about, for a child component.
+         *
+         * Same reason as the name below: the list is this component's own configuration and is not
+         * published into the global configuration object, so a child that reads it from there is
+         * left with nothing and renders a control with no choices in it.
+         *
+         * @return {Array.<{id: number, name: string}>}
+         */
+        getStores: function () {
+            var stores = this.stores || [];
+
+            return (typeof stores === 'function' ? stores() : stores) || [];
+        },
+
+        /**
+         * Get the name of the currently selected store view, for a child component.
+         *
+         * The store list is part of this component's own configuration and reaches no other
+         * component: the page publishes only urls, the form key and the store id into the global
+         * configuration object, so a child that reads the list from there gets an empty array and
+         * quietly has no name for any store at all.
+         *
+         * @return {string}
+         */
+        getCurrentStoreName: function () {
+            return this._getCurrentStoreName();
+        },
+
+        /**
          * Get the name of the currently selected store view.
          *
          * @return {string}
@@ -2460,9 +3042,16 @@ define([
 
         /**
          * Open a preview of the current template in a new browser tab.
+         *
+         * The tab is opened by submitting a form with a `_blank` target, which browsers
+         * only allow while the click that triggered it is still the current interaction.
+         * The form is therefore built and submitted in the same step as the click, without
+         * waiting for a compile: an unstyled tab is a poor preview, but a tab the popup
+         * blocker swallows is no preview at all. The styles it carries are the ones the
+         * in-page preview is showing, which is what makes the two tabs agree.
          */
         previewInNewTab: function () {
-            var content, form, fields;
+            var content, form, fields, providerCode;
 
             this._closeMoreMenu();
 
@@ -2477,15 +3066,27 @@ define([
             form.action = this.urls.preview;
             form.target = '_blank';
 
+            providerCode = this.selectedProvider() || 'mock';
+
             fields = {
                 template_content: content,
                 theme_css: this.themeEditor ? this.themeEditor.getThemeCss() : '',
                 custom_css: this.customCssEditor ? this.customCssEditor.getValue() : '',
+                // Without these the tab renders the utility classes with no styles at all
+                // and falls back to the mock data source, so it shows both a different look
+                // and different values than the preview it was opened from.
+                tailwind_css: this._lastTailwindCss || '',
+                provider_code: providerCode,
+                entity_id: this.selectedEntityId ? this.selectedEntityId() : '',
                 template_identifier: this.currentTemplateId(),
                 form_key: this.formKey,
                 store_id: this.getEffectiveStoreId(),
                 raw: '1'
             };
+
+            if (providerCode === 'custom') {
+                fields.custom_variables = this.customDataEditor ? this.customDataEditor.getValue() : '';
+            }
 
             Object.keys(fields).forEach(function (key) {
                 var input = document.createElement('input');
@@ -2585,7 +3186,15 @@ define([
                 this._entitySearchTimer = null;
             }
 
+            if (this._panelLeftScrollTimer) {
+                clearTimeout(this._panelLeftScrollTimer);
+                this._panelLeftScrollTimer = null;
+            }
+
+            this._clearBusyIndicatorTimer();
+
             $(document).off('keydown.eteShortcuts');
+            $('body').off('themeChange.eteEditor');
 
             tailwindCompiler.destroy();
 

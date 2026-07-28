@@ -1,0 +1,299 @@
+<!--
+/**
+ * Copyright (c) 2026. Volodymyr Hryvinskyi. All rights reserved.
+ * Author: Volodymyr Hryvinskyi <volodymyr@hryvinskyi.com>
+ * GitHub: https://github.com/hryvinskyi
+ */
+-->
+<!--
+    The directive popover.
+
+    Every value that did not come from this repository is bound as text. Custom variable names,
+    configuration values, resolved previews, template variable labels and the server's own refusal
+    messages are written by an admin or a merchant, and the editor already carries one defect from
+    rendering such a string as markup. The instruction bodies and caveats are written here rather
+    than by a merchant and are still bound as text, as a list of items - a step that needs a link
+    carries the address as a field of its own and binds it with attr, never as markup inside a
+    sentence.
+-->
+<div class="ete-inspector"
+     data-bind="visible: isOpen,
+                afterRender: onRootRendered,
+                css: {'ete-inspector-above': panelPlacement() === 'above'},
+                style: {left: panelLeft, top: panelTop, bottom: panelBottom, maxHeight: panelMaxHeight}">
+
+    <div class="ete-inspector-header">
+        <span class="ete-inspector-title" data-bind="text: title"></span>
+        <span class="ete-inspector-kind" data-bind="text: outputKindLabel, visible: outputKindLabel"></span>
+        <button type="button"
+                class="ete-inspector-close"
+                data-bind="click: close, attr: {title: $t('Close')}">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+    </div>
+
+    <code class="ete-inspector-reference" data-bind="text: reference"></code>
+
+    <!-- A formatting change that did not happen replaces the body, so the reason has to be read
+         before the popover is dismissed. -->
+    <!-- ko if: noticeText -->
+    <div class="ete-inspector-notice">
+        <span data-bind="text: noticeText"></span>
+        <div class="ete-inspector-actions">
+            <button type="button"
+                    class="ete-inspector-button ete-inspector-button-secondary"
+                    data-bind="click: close, i18n: 'Close'"></button>
+        </div>
+    </div>
+    <!-- /ko -->
+
+    <!-- ko ifnot: noticeText -->
+    <div class="ete-inspector-body">
+
+        <!-- ko if: isLoading -->
+        <div class="ete-inspector-loading">
+            <span class="ete-spinner-sm"></span>
+            <span data-bind="i18n: 'Looking this up...'"></span>
+        </div>
+        <!-- /ko -->
+
+        <!-- ko if: loadError -->
+        <div class="ete-inspector-message ete-inspector-message-error" data-bind="text: loadError"></div>
+        <!-- /ko -->
+
+        <!-- ko if: hasEntry -->
+
+        <!-- ko ifnot: known -->
+        <div class="ete-inspector-unknown"
+             data-bind="i18n: 'This directive is not in the knowledge base, so nothing is claimed about what it means. The steps below are the general ones for finding out.'"></div>
+        <!-- /ko -->
+
+        <!-- ko if: summary -->
+        <p class="ete-inspector-summary" data-bind="text: summary"></p>
+        <!-- /ko -->
+
+        <!-- ko if: overlong -->
+        <p class="ete-inspector-muted"
+           data-bind="i18n: 'This directive is longer than the knowledge base keys on, so what is shown is the general answer for directives of its kind.'"></p>
+        <!-- /ko -->
+
+        <!-- Origin -->
+        <div class="ete-inspector-section">
+            <div class="ete-inspector-section-title" data-bind="i18n: 'Where it comes from'"></div>
+            <div class="ete-inspector-origin">
+                <span class="ete-inspector-badge" data-bind="text: originLabel"></span>
+                <!-- ko if: originLocator -->
+                <code class="ete-inspector-code" data-bind="text: originLocator"></code>
+                <!-- /ko -->
+            </div>
+            <!-- ko if: originExplanation -->
+            <p class="ete-inspector-text" data-bind="text: originExplanation"></p>
+            <!-- /ko -->
+        </div>
+
+        <!-- Current value -->
+        <div class="ete-inspector-section">
+            <div class="ete-inspector-section-title" data-bind="i18n: 'Current value'"></div>
+            <!-- ko if: valueAvailable -->
+            <pre class="ete-inspector-value" data-bind="text: valuePreview"></pre>
+            <div class="ete-inspector-value-meta">
+                <!-- ko if: valueExact -->
+                <span class="ete-inspector-badge ete-inspector-badge-exact" data-bind="i18n: 'Real value'"></span>
+                <!-- /ko -->
+                <!-- ko ifnot: valueExact -->
+                <span class="ete-inspector-badge ete-inspector-badge-sample" data-bind="i18n: 'Sample data'"></span>
+                <!-- /ko -->
+                <!-- ko if: valueTruncated -->
+                <span class="ete-inspector-badge" data-bind="i18n: 'Shortened here'"></span>
+                <!-- /ko -->
+                <!-- ko if: valueScopeLabel -->
+                <span class="ete-inspector-muted" data-bind="i18n: 'Read at:'"></span>
+                <span class="ete-inspector-muted" data-bind="text: valueScopeLabel"></span>
+                <!-- /ko -->
+            </div>
+            <!-- /ko -->
+            <!-- ko ifnot: valueAvailable -->
+            <p class="ete-inspector-muted" data-bind="i18n: 'No value available here.'"></p>
+            <!-- /ko -->
+        </div>
+
+        <!-- Caveats -->
+        <!-- ko if: caveats().length > 0 -->
+        <div class="ete-inspector-section">
+            <div class="ete-inspector-section-title" data-bind="i18n: 'Worth knowing'"></div>
+            <ul class="ete-inspector-list" data-bind="foreach: caveats">
+                <li data-bind="text: $data"></li>
+            </ul>
+        </div>
+        <!-- /ko -->
+
+        <!-- Formatting. Absent entirely when there is nothing in the template to format - a variable
+             asked about from the chooser has not been inserted yet - and while a read-only version
+             is on screen, where nothing may be written at all. Offering controls that could only
+             refuse reads as a fault rather than as an answer. -->
+        <!-- ko if: showFormatting -->
+        <div class="ete-inspector-section">
+            <div class="ete-inspector-section-title" data-bind="i18n: 'Formatting'"></div>
+
+            <div class="ete-inspector-chain">
+                <span class="ete-inspector-muted" data-bind="i18n: 'In the template:'"></span>
+                <!-- ko if: modifierText -->
+                <code class="ete-inspector-code" data-bind="text: modifierText"></code>
+                <!-- /ko -->
+                <!-- ko ifnot: modifierText -->
+                <code class="ete-inspector-code" data-bind="i18n: 'nothing'"></code>
+                <!-- /ko -->
+            </div>
+
+            <!-- ko if: chainSummary -->
+            <p class="ete-inspector-muted" data-bind="text: chainSummary"></p>
+            <!-- /ko -->
+
+            <!-- ko ifnot: chainLocked -->
+            <div class="ete-inspector-modifiers" data-bind="foreach: modifierRows">
+                <div class="ete-inspector-modifier" data-bind="css: {'ete-applied': applied}">
+                    <label class="ete-inspector-modifier-row">
+                        <input type="checkbox"
+                               class="ete-inspector-checkbox"
+                               data-bind="checked: applied,
+                                          click: function (row) { return $parent.toggleModifier(row); }"/>
+                        <span class="ete-inspector-modifier-name" data-bind="text: label"></span>
+                        <!-- ko ifnot: implemented -->
+                        <span class="ete-inspector-modifier-note" data-bind="i18n: 'not a modifier the renderer implements'"></span>
+                        <!-- /ko -->
+                    </label>
+                    <!-- ko if: description -->
+                    <p class="ete-inspector-modifier-desc" data-bind="text: description"></p>
+                    <!-- /ko -->
+                    <!-- ko if: options.length > 0 -->
+                    <div class="ete-inspector-modifier-args">
+                        <select class="ete-inspector-select"
+                                data-bind="options: options,
+                                           value: argument,
+                                           event: {change: function (row, event) { return $parent.setModifierArgument(row, event); }}"></select>
+                    </div>
+                    <!-- /ko -->
+                </div>
+            </div>
+
+            <div class="ete-inspector-actions">
+                <button type="button"
+                        class="ete-inspector-button ete-inspector-button-secondary"
+                        data-bind="click: clearModifiers, i18n: 'Remove all modifiers'"></button>
+            </div>
+            <!-- /ko -->
+        </div>
+        <!-- /ko -->
+
+        <!-- Where to change it -->
+        <div class="ete-inspector-section">
+            <div class="ete-inspector-section-title" data-bind="i18n: 'Where to change it'"></div>
+
+            <!-- ko if: affordanceKind() === 'link' -->
+            <a class="ete-inspector-link"
+               target="_blank"
+               rel="noopener"
+               data-bind="attr: {href: affordanceUrl}, text: affordanceLabel"></a>
+            <!-- /ko -->
+
+            <!-- ko if: affordanceKind() === 'instruction' -->
+            <!-- ko if: affordanceLabel -->
+            <p class="ete-inspector-text" data-bind="text: affordanceLabel"></p>
+            <!-- /ko -->
+            <ol class="ete-inspector-steps" data-bind="foreach: affordanceSteps">
+                <li data-bind="text: $data"></li>
+            </ol>
+            <!-- /ko -->
+
+            <!-- ko if: affordanceKind() === 'none' -->
+            <p class="ete-inspector-muted" data-bind="i18n: 'There is nowhere in the admin to change this.'"></p>
+            <!-- /ko -->
+
+            <!-- ko if: showValueEditor -->
+            <div class="ete-inspector-field">
+                <!-- ko if: affordanceLabel -->
+                <label class="ete-inspector-field-label" data-bind="text: affordanceLabel"></label>
+                <!-- /ko -->
+
+                <!-- ko if: editorType() === 'textarea' -->
+                <textarea class="ete-inspector-input ete-inspector-textarea"
+                          rows="3"
+                          data-bind="value: inlineValue, disable: inlineSaving"></textarea>
+                <!-- /ko -->
+                <!-- ko if: editorType() === 'select' -->
+                <select class="ete-inspector-select ete-inspector-input"
+                        data-bind="options: editorOptions,
+                                   optionsText: 'label',
+                                   optionsValue: 'value',
+                                   value: inlineValue,
+                                   disable: inlineSaving"></select>
+                <!-- /ko -->
+                <!-- ko if: editorType() !== 'textarea' && editorType() !== 'select' -->
+                <input type="text"
+                       class="ete-inspector-input"
+                       data-bind="value: inlineValue, disable: inlineSaving"/>
+                <!-- /ko -->
+
+                <!-- The scope is named before the write, not after it. -->
+                <div class="ete-inspector-scope">
+                    <!-- ko if: scopeIsDefault -->
+                    <span data-bind="i18n: 'This will be saved in the default configuration scope.'"></span>
+                    <!-- /ko -->
+                    <!-- ko ifnot: scopeIsDefault -->
+                    <span data-bind="i18n: 'This will be saved for the store view:'"></span>
+                    <strong data-bind="text: scopeStoreName"></strong>
+                    <!-- /ko -->
+                </div>
+
+                <!-- ko ifnot: confirmVisible -->
+                <div class="ete-inspector-actions">
+                    <button type="button"
+                            class="ete-inspector-button ete-inspector-button-primary"
+                            data-bind="click: startSave, disable: inlineSaving">
+                        <!-- ko if: inlineSaving -->
+                        <span class="ete-spinner-sm"></span>
+                        <!-- /ko -->
+                        <span data-bind="i18n: 'Save value'"></span>
+                    </button>
+                </div>
+                <!-- /ko -->
+
+                <!-- The default scope is the one an admin is least likely to have chosen on
+                     purpose, so it is the one that has to be agreed to. -->
+                <!-- ko if: confirmVisible -->
+                <div class="ete-inspector-confirm">
+                    <p data-bind="i18n: 'Saved here, this value applies to every store view that has no override of its own.'"></p>
+                    <div class="ete-inspector-actions">
+                        <button type="button"
+                                class="ete-inspector-button ete-inspector-button-danger"
+                                data-bind="click: confirmSave, i18n: 'Save for all store views'"></button>
+                        <button type="button"
+                                class="ete-inspector-button ete-inspector-button-secondary"
+                                data-bind="click: cancelSave, i18n: 'Cancel'"></button>
+                    </div>
+                </div>
+                <!-- /ko -->
+
+                <!-- ko if: inlineMessage -->
+                <div class="ete-inspector-message"
+                     data-bind="text: inlineMessage,
+                                css: {'ete-inspector-message-error': inlineMessageIsError,
+                                      'ete-inspector-message-ok': !inlineMessageIsError()}"></div>
+                <!-- /ko -->
+
+                <!-- And the scope that was actually written is reported back, so the statement
+                     above is something the admin can check rather than something to be trusted. -->
+                <!-- ko if: savedScopeLabel -->
+                <div class="ete-inspector-saved-scope">
+                    <span data-bind="i18n: 'Written to:'"></span>
+                    <strong data-bind="text: savedScopeLabel"></strong>
+                </div>
+                <!-- /ko -->
+            </div>
+            <!-- /ko -->
+        </div>
+
+        <!-- /ko -->
+    </div>
+    <!-- /ko -->
+</div>

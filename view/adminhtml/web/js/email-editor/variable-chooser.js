@@ -4,18 +4,40 @@
  * GitHub: https://github.com/hryvinskyi
  */
 
+/**
+ * The panel that offers the variables an author can insert.
+ *
+ * An adapter: it opens, it asks, it binds, and it says which row was clicked. What a group is, what
+ * a search matches and how many rows there are is decided in the groups module, where it can be
+ * proved without a browser.
+ *
+ * Three things about the request are load-bearing rather than incidental. It is handed to the editor
+ * so that it counts towards the one busy state the screen shares and can be reached by the
+ * cancellation sweep. It carries a generation, claimed before anything is cancelled, so that the
+ * answer for the store view the author has already switched away from cannot overwrite the newer
+ * list - the store switcher is the reason this panel reloads at all, so a superseded answer is the
+ * normal case rather than an exotic one. And a failure is said out loud, because a panel left
+ * spinning tells an author nothing about what to do next.
+ *
+ * A group is remembered as collapsed by its code, never by its label. The label is translated, and a
+ * map keyed on it would lose every collapsed group the day the admin locale changed.
+ */
 define([
     'uiComponent',
     'ko',
-    'jquery'
-], function (Component, ko, $) {
+    'jquery',
+    'mage/translate',
+    'Hryvinskyi_EmailTemplateEditor/js/email-editor/parent-resolver',
+    'Hryvinskyi_EmailTemplateEditor/js/email-editor/failure-reporter',
+    'Hryvinskyi_EmailTemplateEditor/js/email-editor/variable-groups'
+], function (Component, ko, $, $t, parentResolver, failureReporter, variableGroups) {
     'use strict';
 
     /** @type {number} */
-    var MAX_RECENT = 5;
+    var MAX_RECENT = 5,
 
-    /** @type {string} */
-    var STORAGE_KEY = 'ete_recent_variables';
+        /** @type {string} */
+        STORAGE_KEY = 'ete_recent_variables';
 
     return Component.extend({
         defaults: {
@@ -26,13 +48,18 @@ define([
             searchQuery: '',
             groups: [],
             isLoading: false,
-            recentCollapsed: false
+            recentCollapsed: false,
+
+            /** @type {number} Generation guarding the group list against a superseded answer */
+            _groupsToken: 0
         },
 
         /**
          * @inheritDoc
          */
         initialize: function () {
+            var self = this;
+
             this._super();
 
             this.observe([
@@ -47,48 +74,18 @@ define([
             this._loaded = false;
             this._templateId = '';
             this._storeId = 0;
+            this._groupsXhr = null;
             this._expandedGroupsMap = ko.observable({});
 
             this.recentVariables(this._loadRecent());
 
             this.filteredGroups = ko.computed(function () {
-                var query = (this.searchQuery() || '').toLowerCase(),
-                    allGroups = this.groups();
-
-                if (!query) {
-                    return allGroups;
-                }
-
-                return allGroups.reduce(function (result, group) {
-                    var matchingVariables = (group.variables || []).filter(function (variable) {
-                        var value = (variable.value || '').toLowerCase(),
-                            label = (variable.label || '').toLowerCase();
-
-                        return value.indexOf(query) !== -1 || label.indexOf(query) !== -1;
-                    });
-
-                    if (matchingVariables.length) {
-                        result.push({
-                            label: group.label,
-                            variables: matchingVariables
-                        });
-                    }
-
-                    return result;
-                }, []);
-            }, this);
+                return variableGroups.filter(self.groups(), self.searchQuery());
+            });
 
             this.totalCount = ko.computed(function () {
-                var groups = this.groups(),
-                    count = 0,
-                    i;
-
-                for (i = 0; i < groups.length; i++) {
-                    count += (groups[i].variables || []).length;
-                }
-
-                return count;
-            }, this);
+                return variableGroups.countVariables(self.groups());
+            });
 
             return this;
         },
@@ -151,7 +148,7 @@ define([
          * @param {Object} group
          */
         toggleGroup: function (group) {
-            var key = group.label || '',
+            var key = group.code,
                 map = this._expandedGroupsMap(),
                 updated = {};
 
@@ -170,10 +167,7 @@ define([
          * @return {boolean}
          */
         isGroupExpanded: function (group) {
-            var key = group.label || '',
-                map = this._expandedGroupsMap();
-
-            return map[key] !== false;
+            return this._expandedGroupsMap()[group.code] !== false;
         },
 
         /**
@@ -181,11 +175,33 @@ define([
          *
          * @param {string} [templateId]
          * @param {number} [storeId]
+         * @return {void}
          */
         loadGroups: function (templateId, storeId) {
             var self = this,
-                url = this.urls.variableLoadGroups || this.urls.sampleDataGetVariables,
-                data = {form_key: this.formKey};
+                editor = parentResolver.peek(this),
+                url = this.urls.variableLoadGroups,
+                data = {form_key: this.formKey},
+                token,
+                xhr;
+
+            // Claimed before anything is cancelled. Cancelling is best effort - an answer already on
+            // the wire still arrives - so it is this generation, not the abort, that decides which
+            // answer is allowed to become the list.
+            token = ++this._groupsToken;
+
+            if (this._groupsXhr && this._groupsXhr.readyState !== 4) {
+                this._groupsXhr.abort();
+            }
+
+            this._groupsXhr = null;
+
+            if (!url) {
+                this.isLoading(false);
+                failureReporter.report(this, $t('This editor has no address for loading variables.'));
+
+                return;
+            }
 
             if (templateId) {
                 data.template_id = templateId;
@@ -197,66 +213,47 @@ define([
 
             this.isLoading(true);
 
-            $.ajax({
+            xhr = $.ajax({
                 url: url,
                 type: 'GET',
                 data: data,
                 dataType: 'json'
-            }).done(function (res) {
-                var groups = [];
+            });
 
-                if (res.groups) {
-                    if (Array.isArray(res.groups)) {
-                        groups = res.groups;
-                    } else if (typeof res.groups === 'object') {
-                        groups = self._transformVariables(res.groups);
-                    }
-                } else if (res.variables && typeof res.variables === 'object') {
-                    groups = self._transformVariables(res.variables);
+            this._groupsXhr = editor && typeof editor.trackRequest === 'function'
+                ? editor.trackRequest(xhr)
+                : xhr;
+
+            this._groupsXhr.done(function (res) {
+                if (token !== self._groupsToken) {
+                    return;
                 }
 
-                self.groups(groups);
+                if (res && res.success === false) {
+                    failureReporter.report(self, res.message || $t('The variables could not be loaded.'));
+
+                    return;
+                }
+
+                self.groups(variableGroups.normalise(res && res.groups));
                 self._loaded = true;
-            }).always(function () {
-                self.isLoading(false);
-            });
-        },
-
-        /**
-         * Transform a flat variables object into the groups array format.
-         *
-         * @param {Object} variables
-         * @return {Array}
-         */
-        _transformVariables: function (variables) {
-            var groups = [];
-
-            if (Array.isArray(variables)) {
-                return variables;
-            }
-
-            Object.keys(variables).forEach(function (groupName) {
-                var groupVars = variables[groupName],
-                    items = [];
-
-                if (Array.isArray(groupVars)) {
-                    items = groupVars;
-                } else if (typeof groupVars === 'object') {
-                    Object.keys(groupVars).forEach(function (key) {
-                        items.push({
-                            value: key,
-                            label: ''
-                        });
-                    });
+            }).fail(function (jqXhr, textStatus) {
+                // A cancelled load is not a fault: it was superseded by the store view the author
+                // switched to, and the answer for that one is already on its way.
+                if (textStatus === 'abort' || token !== self._groupsToken) {
+                    return;
                 }
 
-                groups.push({
-                    label: groupName,
-                    variables: items
-                });
+                failureReporter.report(
+                    self,
+                    $t('The variables could not be loaded. Please try again.'),
+                    textStatus
+                );
+            }).always(function () {
+                if (token === self._groupsToken) {
+                    self.isLoading(false);
+                }
             });
-
-            return groups;
         },
 
         /**
@@ -270,13 +267,34 @@ define([
         },
 
         /**
+         * Ask for a row to be explained, without inserting it.
+         *
+         * Explaining and inserting are two different intentions and the row offers both: an author
+         * who is not sure a variable is the right one has no way to find out if reading about it
+         * costs them an edit to undo. Nothing goes into the recently used list either, because the
+         * variable has not been used.
+         *
+         * @param {Object} variable
+         * @return {void}
+         */
+        onVariableInfoClick: function (variable) {
+            if (!variable.reference) {
+                return;
+            }
+
+            this.trigger('describeVariable', variable.reference);
+        },
+
+        /**
          * Load recently used variables from localStorage.
          *
          * @return {Array}
          */
         _loadRecent: function () {
+            var stored;
+
             try {
-                var stored = localStorage.getItem(STORAGE_KEY);
+                stored = localStorage.getItem(STORAGE_KEY);
 
                 return stored ? JSON.parse(stored) : [];
             } catch (e) {
@@ -286,6 +304,10 @@ define([
 
         /**
          * Add a variable to the recently used list and persist.
+         *
+         * The reference is kept with the row so that a recently used variable can be explained as
+         * readily as one picked out of its group. A row remembered before rows carried references
+         * simply carries none, and offers no explanation rather than a broken one.
          *
          * @param {Object} variable
          */
@@ -307,7 +329,8 @@ define([
 
             recent.unshift({
                 value: variable.value,
-                label: variable.label || ''
+                label: variable.label || '',
+                reference: variable.reference || ''
             });
 
             if (recent.length > MAX_RECENT) {

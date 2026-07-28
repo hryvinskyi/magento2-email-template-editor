@@ -5,6 +5,130 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-07-28
+
+Contains the changes listed under 1.1.3, which was written but never tagged.
+
+### Added
+- **Every `{{...}}` directive in the editor is interactive.** Clicking one opens an inspector that
+  states what the directive is, how its value is produced, what it currently renders as, what its
+  `|...` chain does, and where the value can be changed — a deep link into the admin, written
+  instructions when no page edits it, or an editor that writes the value back to its origin.
+- **`etc/email_variables.xml`** — the knowledge base, a merged configuration with an XSD that any
+  module can contribute to. ~90 hand-written entries: every directive kind, the configuration paths a
+  message may read, the store and custom variables, the variables each family of templates is sent,
+  and the design values. Three derived providers fill the rest from Magento's own configuration
+  structure, the custom-variable table and each template's `@vars` annotation. Providers resolve
+  first-match-wins by `sortOrder`, so an entry written by hand always beats a derived one.
+- **A directive nothing describes falls back to its kind's entry**, returned under the reference that
+  was asked about and carrying a caveat saying so. Without it every `{{trans}}`, `{{block}}` and
+  `{{layout}}` reads as undocumented, because their expression cannot be enumerated.
+- **The formatting of a directive is editable from the inspector.** The rewrite is bounded to the
+  modifier span and re-derived from a live mark before every write, so a formatting change cannot
+  alter what the directive points at, and a write is refused outright when the directive moved or
+  changed underneath.
+- **Values can be edited in place where that is safe.** Configuration paths and custom variables only,
+  behind six gates, writing through `PreparedValueFactory` and the configuration resource so the
+  field's backend model validates the value exactly as the admin form would. The scope is named before
+  the write and the scope that actually landed is read back and shown; a write into the default scope
+  needs an explicit confirmation.
+- **`{{trans}}` shows what it renders**, read inside a frontend environment emulation for the store
+  view being edited — read as the request stands, the phrase would be translated against the
+  administrator's locale, which is a different answer that looks like the right one.
+- **`i18n/en_US.csv`** — the module's first dictionary, 894 rows, covering the whole module rather than
+  only the new work. Hand-maintained and pinned by a coverage test in both directions:
+  `i18n:collect-phrases` cannot see a `$t()` literal split across lines, nor XML text nodes at all.
+- **`Test/Js/`** — the module's first JavaScript test harness. `node Test/Js/run.js` from the module
+  root. Each module is evaluated in a context whose only global is `define`, so one that reaches for
+  `document` or declares a dependency fails to load.
+
+### Fixed
+- **The variable chooser's request was invisible to the editor** — not counted by the busy indicator,
+  not reachable by the cancellation sweep, and with no failure handler at all, so a failed load left
+  the panel spinning in silence. It is now tracked, reported, and guarded against a superseded answer.
+- **Variable groups were keyed by their English label**, which was also the key of the collapsed-state
+  map: in any non-English admin locale every collapsed group was forgotten, two groups translated alike
+  collapsed together, and searching reopened them. Groups now carry a code beside their label.
+- **The theme scope selector offered a single option.** It was built from a store list read out of the
+  page's global configuration object, which does not carry one — so the control documented as the only
+  supported way to return a theme to the global scope had never worked. The same defect blanked the
+  store view named by an inline write. Both components now ask the orchestrator, which owns the store
+  switcher.
+- **The unit suite depended on `generated/code`.** Several tests mock DI-generated factories, which have
+  no source file and are written by the running application, so the suite failed and passed on alternate
+  runs. The bootstrap now stands in for a factory that is genuinely absent, after Composer's autoloader
+  so a real one always wins.
+
+## [1.1.3] - 2026-07-28
+
+### Added
+- **`oklch()` / `oklab()` are converted to sRGB.** Tailwind v4's entire default palette is
+  authored in OKLCH, so `border-gray-700`, `text-red-500` and every other stock colour
+  utility emitted `oklch(37.3% .034 259.733)` into the inline styles. Outlook, Yahoo and
+  every pre-2023 client drop such a declaration outright, which for a colour property means
+  falling back to `currentColor` or the inherited value. New `CssColorConverterInterface` /
+  `CssColorConverter` converts both notations through OKLab to sRGB (Björn Ottosson's
+  matrices, out-of-gamut values clamped in linear light), emitting `#rrggbb` or `rgba()`
+  when the colour carries an alpha. Verified against the palette Tailwind documents:
+  `oklch(37.3% .034 259.733)` → `#364153`, `oklch(63.7% .237 25.331)` → `#fb2c36`,
+  `oklch(62.3% .214 259.815)` → `#2b7fff`. Percentage and unitless lightness, percentage
+  chroma, `deg`/`grad`/`rad`/`turn` hues, `none` channels and `/ alpha` are all handled;
+  `calc()` channels, unresolved `var()` and the relative-colour `from` syntax are left
+  untouched rather than mangled. The conversion runs after variable substitution, since the
+  palette lives behind `--color-*` variables.
+
+### Fixed
+- **Border utilities rendered no border.** Tailwind v4 emits `border-2` as
+  `border-style: var(--tw-border-style); border-width: 2px` and keeps the actual value in
+  an `@property --tw-border-style { … initial-value: solid }` registration, mirrored by an
+  `@layer properties` fallback. `CssLayerFlattener` dropped *both*, so the `var()` stayed
+  unresolvable, inlined verbatim, and computed to `border-style: none` — a 2px border that
+  is never painted. The flattener now harvests every `initial-value` it registers and
+  hoists them into a leading `:root { … }` block before dropping the `@property` rules, so
+  the resolver can substitute them, and hoisting them *first* means any later declaration
+  still wins in the resolver's last-wins map. This also repairs the other v4 composition
+  slots that were left dangling for the same reason (`--tw-shadow`,
+  `--tw-ring-offset-shadow`, `--tw-inset-shadow`, …). Note the pre-existing limitation this
+  does **not** fix: the resolver's variable map is document-global, so a single
+  `.border-dashed` rule anywhere in the stylesheet still makes every `border-*` utility
+  dashed. That needs per-rule scope in the resolver and is tracked separately.
+- **Editor CSS lost to the stock template styles.** Magento's `{{inlinecss}}` directive
+  writes `css/email-inline.css` into `style="…"` attributes from an after-filter callback
+  inside `AbstractTemplate::getProcessedTemplate()` — strictly before this module inlines
+  the override's Tailwind/custom CSS. Emogrifier deliberately re-applies pre-existing
+  `style` attributes *after* every stylesheet rule, so those declarations won regardless of
+  selector specificity: `class="text-black"` on a link inside an included header/footer
+  still rendered the theme's `a { color: … }`. New `CssImportantPromoterInterface` /
+  `CssImportantPromoter` promotes every declaration of the editor's own CSS to
+  `!important`, which is the one thing Emogrifier honours over a pre-existing inline value.
+  Applied in `CssInliner` (theme/tailwind/custom parameters) and in `EmailTemplatePlugin`
+  before the override CSS is embedded as a `<style>` block, so an override on a template
+  pulled in via `{{template config_path="…"}}` behaves the same as one edited directly.
+  Writing `!text-black` is no longer necessary. Emogrifier strips the annotation from the
+  final inline styles, so the sent email carries no `!important` in its `style` attributes.
+  Base-template `<style>` blocks travelling in the markup are deliberately left alone.
+- **Escaped Tailwind classes were ranked as element selectors.** Emogrifier weighs selector
+  precedence by counting `.`/`[`/`:` followed by a *word* character, so every class that
+  needs escaping — `.\!text-black`, `.p-\[10px\]`, `.w-1\/2`, `.p-1\.5` — scored 1 instead
+  of 100 and was applied *before* any plain class rule rather than after it. `CssInliner`
+  now restates escape-bearing class selectors as the equivalent `[class~="…"]` attribute
+  selector, which matches the same elements and is weighed as a class.
+
+- The modern-syntax `rgb()` / `hsl()` conversion missed a leading-dot alpha (`rgb(255 0 0 /
+  .5)`), which is what minified Tailwind output emits, so the whole colour survived in a
+  notation Emogrifier's parser and older clients do not understand. An angle unit on the
+  `hsl()` hue (`hsl(200deg 50% 50%)`) had the same effect. Both are now accepted.
+- `CssInliner` concatenated its CSS parameters custom → tailwind → theme while
+  `EmailTemplatePlugin::buildCombinedCss` used theme → tailwind → custom, so the editor
+  preview and the delivered email resolved a conflict between two equally specific rules in
+  opposite directions. Both now use theme → tailwind → custom.
+
+### Changed
+- Because the editor's CSS is now uniformly `!important`, source order decides between two
+  equally specific rules inside it. Custom CSS comes last in the bundle and therefore still
+  wins; a `!`-prefixed utility no longer outranks a later same-specificity rule from the
+  same bundle purely on the strength of its flag.
+
 ## [1.1.2] - 2026-06-19
 
 ### Fixed

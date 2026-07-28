@@ -16,6 +16,9 @@
             <!-- /ko -->
         </button>
         <span class="ete-status" data-bind="text: statusText, css: statusCssClass"></span>
+        <span class="ete-busy-indicator" role="status" data-bind="visible: showBusyIndicator, attr: {title: $t('Working...'), 'aria-label': $t('Working...'), 'aria-hidden': showBusyIndicator() ? 'false' : 'true'}">
+            <span class="ete-spinner-sm"></span>
+        </span>
         <span class="ete-badge" data-bind="visible: showDraftBadge, text: currentTemplateStatus() === 'published' ? $t('PUBLISHED') : $t('DRAFT'), css: currentTemplateStatus() === 'published' ? 'ete-badge-published' : 'ete-badge-draft'"></span>
         <span class="ete-badge ete-badge-schedule" data-bind="visible: showScheduleBadge, i18n: 'SCHEDULED'"></span>
         <span class="ete-badge ete-badge-expired" data-bind="visible: showExpiredBadge, i18n: 'EXPIRED'"></span>

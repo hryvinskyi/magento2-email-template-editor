@@ -20,11 +20,68 @@ use Magento\Email\Model\Template\Config as EmailConfig;
 use Magento\Email\Model\TemplateFactory;
 use Magento\Framework\Filesystem;
 use Magento\Framework\Filesystem\Directory\ReadFactory;
+use Magento\Framework\ObjectManager\ResetAfterRequestInterface;
 use Magento\Store\Model\App\Emulation;
 use Psr\Log\LoggerInterface;
 
-class TemplateLoader implements TemplateLoaderInterface
+class TemplateLoader implements TemplateLoaderInterface, ResetAfterRequestInterface
 {
+    /**
+     * Entity fields the sidebar summary reads
+     *
+     * Restricting the select keeps template_content, custom_css and tailwind_css — three
+     * MEDIUMTEXT columns the summary never touches — out of a result set that spans every
+     * override in the install.
+     */
+    private const SUMMARY_FIELDS = [
+        TemplateOverrideInterface::ENTITY_ID,
+        TemplateOverrideInterface::TEMPLATE_IDENTIFIER,
+        TemplateOverrideInterface::STORE_ID,
+        TemplateOverrideInterface::STATUS,
+        TemplateOverrideInterface::DRAFT_NAME,
+        TemplateOverrideInterface::VERSION_COMMENT,
+        TemplateOverrideInterface::SCHEDULED_AT,
+        TemplateOverrideInterface::ACTIVE_FROM,
+        TemplateOverrideInterface::ACTIVE_TO,
+        TemplateOverrideInterface::CREATED_BY_USERNAME,
+        TemplateOverrideInterface::LAST_EDITED_BY_USERNAME,
+        TemplateOverrideInterface::CREATED_AT,
+        TemplateOverrideInterface::UPDATED_AT,
+        TemplateOverrideInterface::IS_ACTIVE,
+    ];
+
+    /**
+     * Order the sidebar groups override statuses in
+     *
+     * A status absent from this map is not shown at all, matching the fact that the tree only
+     * ever asked for these three.
+     *
+     * @var array<string, int>
+     */
+    private const STATUS_ORDER = [
+        TemplateOverrideInterface::STATUS_PUBLISHED => 0,
+        TemplateOverrideInterface::STATUS_SCHEDULED => 1,
+        TemplateOverrideInterface::STATUS_DRAFT => 2,
+    ];
+
+    /**
+     * The email template list, resolved once per request
+     *
+     * The underlying call is uncached and costs a filesystem probe per template per installed
+     * theme. Its result does not vary by store: the theme sweep walks every installed theme
+     * package rather than the active design theme, so store emulation cannot change it.
+     *
+     * @var array<int, array{value: string, label: string, group?: string}>|null
+     */
+    private ?array $availableTemplates = null;
+
+    /**
+     * Identifier to human-readable label, built once from the template list
+     *
+     * @var array<string, string>|null
+     */
+    private ?array $templateLabels = null;
+
     /**
      * @param EmailConfig $emailConfig
      * @param TemplateOverrideRepositoryInterface $overrideRepository
@@ -59,10 +116,19 @@ class TemplateLoader implements TemplateLoaderInterface
         $grouped = [];
 
         try {
-            $templates = $this->emailConfig->getAvailableTemplates();
+            $templates = $this->getAvailableTemplates();
+
+            $identifiers = [];
+            foreach ($templates as $template) {
+                $identifiers[] = (string)$template['value'];
+            }
+
+            $scopes = $this->getStoreScopes($storeId);
+            $overridesByIdentifier = $this->fetchOverrides($identifiers, $scopes);
+            $legacyByOrigCode = $this->fetchLegacyRows($identifiers);
 
             foreach ($templates as $template) {
-                $templateId = $template['value'];
+                $templateId = (string)$template['value'];
                 $label = $template['label'];
                 $group = $template['group'] ?? $this->deriveGroupFromId($templateId);
 
@@ -71,7 +137,11 @@ class TemplateLoader implements TemplateLoaderInterface
                     'label' => (string)$label,
                     'module' => $this->extractModuleName($templateId),
                     'area' => $this->areaResolver->resolve($templateId),
-                    'overrides' => $this->getOverridesForTemplate($templateId, $storeId),
+                    'overrides' => $this->buildOverridesForTemplate(
+                        $scopes,
+                        $overridesByIdentifier[$templateId] ?? [],
+                        $legacyByOrigCode[$templateId] ?? []
+                    ),
                 ];
             }
 
@@ -81,6 +151,75 @@ class TemplateLoader implements TemplateLoaderInterface
         }
 
         return $grouped;
+    }
+
+    /**
+     * Fetch the override rows of every listed template in one repository call
+     *
+     * A failure here costs the overrides and nothing else: the caller still renders the full
+     * template tree with empty override lists, which is what the admin saw when the lookup was
+     * per-template and failed. Letting the exception escape instead would empty the sidebar
+     * entirely. One call site means one warning per request rather than one per template.
+     *
+     * @param string[] $identifiers
+     * @param int[] $scopes
+     * @return array<string, TemplateOverrideInterface[]>
+     */
+    private function fetchOverrides(array $identifiers, array $scopes): array
+    {
+        try {
+            return $this->overrideRepository->getOverridesForIdentifiers(
+                $identifiers,
+                $scopes,
+                [],
+                self::SUMMARY_FIELDS
+            );
+        } catch (\Exception $e) {
+            $this->logger->warning(
+                'Failed to load template overrides for store scopes ' . implode(', ', $scopes)
+                . '; the sidebar will list templates without them: ' . $e->getMessage()
+            );
+
+            return [];
+        }
+    }
+
+    /**
+     * Fetch the legacy email_template rows of every listed template in one repository call
+     *
+     * Degrades the same way the override fetch does: the tree still renders, without the legacy
+     * entries. Only theme-free identifiers can match, since orig_template_code never carries a
+     * theme suffix.
+     *
+     * @param string[] $identifiers
+     * @return array<string, BackendTemplate[]>
+     */
+    private function fetchLegacyRows(array $identifiers): array
+    {
+        try {
+            return $this->legacyRepository->getByOrigCodes($identifiers);
+        } catch (\Exception $e) {
+            $this->logger->warning(
+                'Failed to load legacy email templates; the sidebar will list managed overrides '
+                . 'only: ' . $e->getMessage()
+            );
+
+            return [];
+        }
+    }
+
+    /**
+     * Resolve the email template list, once per request
+     *
+     * @return array<int, array{value: string, label: string, group?: string}>
+     */
+    private function getAvailableTemplates(): array
+    {
+        if ($this->availableTemplates === null) {
+            $this->availableTemplates = $this->emailConfig->getAvailableTemplates();
+        }
+
+        return $this->availableTemplates;
     }
 
     /**
@@ -439,17 +578,23 @@ class TemplateLoader implements TemplateLoaderInterface
     private function getTemplateLabel(string $identifier): string
     {
         try {
-            $templates = $this->emailConfig->getAvailableTemplates();
-            foreach ($templates as $template) {
-                if ($template['value'] === $identifier) {
-                    return (string)$template['label'];
+            if ($this->templateLabels === null) {
+                $labels = [];
+                foreach ($this->getAvailableTemplates() as $template) {
+                    $value = (string)$template['value'];
+                    // First entry wins, as the scan this replaces returned the first match.
+                    if (!isset($labels[$value])) {
+                        $labels[$value] = (string)$template['label'];
+                    }
                 }
-            }
-        } catch (\Exception) {
-            // Silently fall through
-        }
 
-        return $identifier;
+                $this->templateLabels = $labels;
+            }
+
+            return $this->templateLabels[$identifier] ?? $identifier;
+        } catch (\Exception) {
+            return $identifier;
+        }
     }
 
     /**
@@ -494,54 +639,34 @@ class TemplateLoader implements TemplateLoaderInterface
     }
 
     /**
-     * Get all overrides (draft, published, scheduled) for a template as sidebar children
+     * Turn one template's fetched rows into its sidebar children
      *
-     * Legacy Magento email_template rows whose orig_template_code matches the
-     * identifier are appended as a separate "source = legacy" subset. A legacy
-     * row is hidden when a managed override already exists for the same
-     * identifier in either the requested scope or the default ("All Store
-     * Views") scope, since the runtime overlay represents the legacy row through
-     * the managed one in that case.
+     * Takes the rows already fetched for the whole list rather than querying per template.
+     * Managed overrides (draft, published, scheduled) come first, ordered by sortOverrides().
+     * Legacy Magento email_template rows whose orig_template_code matches the identifier are
+     * appended as a separate "source = legacy" subset. A legacy row is hidden when a managed
+     * override already exists for the same identifier in either the requested scope or the
+     * default ("All Store Views") scope, since the runtime overlay represents the legacy row
+     * through the managed one in that case.
      *
-     * @param string $templateId
-     * @param int $storeId
-     * @return array<int, array{entity_id: int, label: string, status: string, scheduled_at: string|null, last_edited_by: string|null, updated_at: string|null}>
+     * @param int[] $scopes
+     * @param TemplateOverrideInterface[] $overrideRows
+     * @param BackendTemplate[] $legacyRows
+     * @return array<int, array<string, mixed>>
      */
-    private function getOverridesForTemplate(string $templateId, int $storeId): array
+    private function buildOverridesForTemplate(array $scopes, array $overrideRows, array $legacyRows): array
     {
         $overrides = [];
         $seenIds = [];
-        $scopes = $this->getStoreScopes($storeId);
 
-        try {
-            foreach ($scopes as $scopeId) {
-                foreach ($this->overrideRepository->getPublishedList($templateId, $scopeId) as $published) {
-                    if (!isset($seenIds[$published->getEntityId()])) {
-                        $overrides[] = $this->buildOverrideSummary($published);
-                        $seenIds[$published->getEntityId()] = true;
-                    }
-                }
+        foreach ($this->sortOverrides($overrideRows, $scopes) as $override) {
+            $entityId = (int)$override->getEntityId();
+            if (isset($seenIds[$entityId])) {
+                continue;
             }
 
-            foreach ($scopes as $scopeId) {
-                foreach ($this->overrideRepository->getScheduledOverrides($templateId, $scopeId) as $scheduled) {
-                    if (!isset($seenIds[$scheduled->getEntityId()])) {
-                        $overrides[] = $this->buildOverrideSummary($scheduled);
-                        $seenIds[$scheduled->getEntityId()] = true;
-                    }
-                }
-            }
-
-            foreach ($scopes as $scopeId) {
-                foreach ($this->overrideRepository->getDrafts($templateId, $scopeId) as $draft) {
-                    if (!isset($seenIds[$draft->getEntityId()])) {
-                        $overrides[] = $this->buildOverrideSummary($draft);
-                        $seenIds[$draft->getEntityId()] = true;
-                    }
-                }
-            }
-        } catch (\Exception) {
-            // Silently fall through
+            $seenIds[$entityId] = true;
+            $overrides[] = $this->buildOverrideSummary($override);
         }
 
         try {
@@ -550,24 +675,117 @@ class TemplateLoader implements TemplateLoaderInterface
                 $managedScopes[(int)$entry['store_id']] = true;
             }
 
-            foreach ($this->legacyRepository->getByOrigCode($templateId) as $legacyRow) {
+            foreach ($legacyRows as $legacyRow) {
                 $legacyEntityId = (int)$legacyRow->getId();
                 if ($legacyEntityId <= 0) {
                     continue;
                 }
 
-                $bindings = $this->legacyRepository->getScopeBindings($legacyEntityId);
+                $bindings = $this->legacyRepository->getScopeBindingsForTemplate($legacyRow);
                 if ($this->isLegacyCoveredByManaged($bindings, $managedScopes)) {
                     continue;
                 }
 
                 $overrides[] = $this->buildLegacyOverrideSummary($legacyRow, $bindings);
             }
-        } catch (\Exception) {
-            // Silently fall through
+        } catch (\Exception $e) {
+            $this->logger->warning(
+                'Failed to append legacy templates to the sidebar; managed overrides are still '
+                . 'listed: ' . $e->getMessage()
+            );
         }
 
         return $overrides;
+    }
+
+    /**
+     * Put override rows into the order the sidebar has always presented them in
+     *
+     * The order is a policy of this class, not of the query that fetched the rows: the
+     * per-identifier repository lookups it replaces disagreed among themselves, two of them
+     * imposing no SQL order at all and simply returning what the composite index handed back.
+     *
+     * Published rows come first, then scheduled, then draft. Inside a status, the specific store
+     * precedes the default scope, in the order the scope list gives. Inside a scope, published and
+     * draft rows go by ascending entity id — the index order they arrived in before — while
+     * scheduled rows go by ascending schedule date with undated rows first, matching how the
+     * database sorts nulls ascending, and fall back to ascending entity id when two dates match.
+     * That last tie-break is firmer than the database guaranteed; it makes the tree deterministic
+     * rather than changing which rows appear.
+     *
+     * A row whose status or store scope is outside the requested set is dropped, since the
+     * per-status, per-scope lookups could never have returned it.
+     *
+     * @param TemplateOverrideInterface[] $rows
+     * @param int[] $scopes
+     * @return TemplateOverrideInterface[]
+     */
+    private function sortOverrides(array $rows, array $scopes): array
+    {
+        $scopeOrder = array_flip(array_map('intval', array_values($scopes)));
+
+        $ordered = [];
+        foreach ($rows as $row) {
+            if (!array_key_exists($row->getStatus(), self::STATUS_ORDER)) {
+                continue;
+            }
+
+            if (!isset($scopeOrder[(int)$row->getStoreId()])) {
+                continue;
+            }
+
+            $ordered[] = $row;
+        }
+
+        usort(
+            $ordered,
+            function (TemplateOverrideInterface $left, TemplateOverrideInterface $right) use ($scopeOrder): int {
+                $byStatus = self::STATUS_ORDER[$left->getStatus()] <=> self::STATUS_ORDER[$right->getStatus()];
+                if ($byStatus !== 0) {
+                    return $byStatus;
+                }
+
+                $byScope = $scopeOrder[(int)$left->getStoreId()] <=> $scopeOrder[(int)$right->getStoreId()];
+                if ($byScope !== 0) {
+                    return $byScope;
+                }
+
+                if ($left->getStatus() === TemplateOverrideInterface::STATUS_SCHEDULED) {
+                    $bySchedule = $this->compareScheduledAt($left->getScheduledAt(), $right->getScheduledAt());
+                    if ($bySchedule !== 0) {
+                        return $bySchedule;
+                    }
+                }
+
+                return (int)$left->getEntityId() <=> (int)$right->getEntityId();
+            }
+        );
+
+        return $ordered;
+    }
+
+    /**
+     * Compare two schedule dates the way an ascending database sort does, with nulls first
+     *
+     * @param string|null $left
+     * @param string|null $right
+     * @return int
+     */
+    private function compareScheduledAt(?string $left, ?string $right): int
+    {
+        if ($left === $right) {
+            return 0;
+        }
+
+        if ($left === null) {
+            return -1;
+        }
+
+        if ($right === null) {
+            return 1;
+        }
+
+        return $left <=> $right;
     }
 
     /**
@@ -710,4 +928,12 @@ class TemplateLoader implements TemplateLoaderInterface
         ];
     }
 
+    /**
+     * @inheritDoc
+     */
+    public function _resetState(): void
+    {
+        $this->availableTemplates = null;
+        $this->templateLabels = null;
+    }
 }

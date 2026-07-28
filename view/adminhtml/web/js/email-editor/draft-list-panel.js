@@ -7,8 +7,11 @@
 define([
     'uiComponent',
     'ko',
-    'jquery'
-], function (Component, ko, $) {
+    'jquery',
+    'mage/translate',
+    'Hryvinskyi_EmailTemplateEditor/js/email-editor/parent-resolver',
+    'Hryvinskyi_EmailTemplateEditor/js/email-editor/failure-reporter'
+], function (Component, ko, $, $t, parentResolver, failureReporter) {
     'use strict';
 
     return Component.extend({
@@ -39,7 +42,7 @@ define([
          *
          * @param {string} templateIdentifier
          * @param {number} storeId
-         * @return {jQuery.Deferred}
+         * @return {jQuery.jqXHR}
          */
         loadDrafts: function (templateIdentifier, storeId) {
             var self = this;
@@ -48,9 +51,21 @@ define([
                 template_identifier: templateIdentifier,
                 store_id: storeId
             }).done(function (res) {
+                if (res.success === false) {
+                    failureReporter.report(self, res.message || $t('The drafts could not be loaded.'));
+
+                    return;
+                }
+
                 if (res.drafts) {
                     self.setDrafts(res.drafts);
                 }
+            }).fail(function (xhr, textStatus) {
+                failureReporter.report(
+                    self,
+                    $t('The drafts could not be loaded. Please try again.'),
+                    textStatus
+                );
             });
         },
 
@@ -87,8 +102,20 @@ define([
             this._ajax(this.urls.renameDraft, 'POST', {
                 entity_id: draftData.entity_id,
                 draft_name: newName
-            }).done(function () {
+            }).done(function (res) {
+                if (res && res.success === false) {
+                    failureReporter.report(self, res.message || $t('The draft could not be renamed.'));
+
+                    return;
+                }
+
                 self._reloadDraftsFromParent();
+            }).fail(function (xhr, textStatus) {
+                failureReporter.report(
+                    self,
+                    $t('The draft could not be renamed. Please try again.'),
+                    textStatus
+                );
             });
         },
 
@@ -102,8 +129,20 @@ define([
 
             this._ajax(this.urls.duplicateDraft, 'POST', {
                 entity_id: draftData.entity_id
-            }).done(function () {
+            }).done(function (res) {
+                if (res && res.success === false) {
+                    failureReporter.report(self, res.message || $t('The draft could not be duplicated.'));
+
+                    return;
+                }
+
                 self._reloadDraftsFromParent();
+            }).fail(function (xhr, textStatus) {
+                failureReporter.report(
+                    self,
+                    $t('The draft could not be duplicated. Please try again.'),
+                    textStatus
+                );
             });
         },
 
@@ -124,8 +163,23 @@ define([
                 onConfirm: function () {
                     self._ajax(self.urls.deleteDraft, 'POST', {
                         entity_id: draftData.entity_id
-                    }).done(function () {
+                    }).done(function (res) {
+                        if (res && res.success === false) {
+                            failureReporter.report(
+                                self,
+                                res.message || $t('The draft could not be deleted.')
+                            );
+
+                            return;
+                        }
+
                         self._reloadDraftsFromParent();
+                    }).fail(function (xhr, textStatus) {
+                        failureReporter.report(
+                            self,
+                            $t('The draft could not be deleted. Please try again.'),
+                            textStatus
+                        );
                     });
                 }
             });
@@ -158,33 +212,50 @@ define([
         },
 
         /**
-         * Reload drafts via the parent component.
+         * Reload drafts via the editor, which knows which template and store view the
+         * list belongs to.
+         *
+         * @return {void}
          */
         _reloadDraftsFromParent: function () {
-            var parent = this.source || this.parentComponent;
+            var editor = parentResolver.peek(this);
 
-            if (parent && typeof parent.loadDrafts === 'function') {
-                parent.loadDrafts();
+            if (editor && typeof editor.loadDrafts === 'function') {
+                editor.loadDrafts();
             }
         },
 
         /**
          * Perform an AJAX request with form_key injection.
          *
+         * The request is handed to the editor so that it counts towards the one busy
+         * state the whole screen shares and can be reached by its cancellation sweep.
+         * The jqXHR itself is what comes back, synchronously, so every caller keeps
+         * chaining .done/.fail on the request exactly as before. While the editor is
+         * not registered yet the request simply goes out untracked - invisible is far
+         * better than not sent at all, and that window closes during page load.
+         *
          * @param {string} url
          * @param {string} method
          * @param {Object} data
-         * @return {jQuery.Deferred}
+         * @return {jQuery.jqXHR}
          */
         _ajax: function (url, method, data) {
+            var editor = parentResolver.peek(this),
+                xhr;
+
             data.form_key = this.formKey;
 
-            return $.ajax({
+            xhr = $.ajax({
                 url: url,
                 type: method,
                 data: data,
                 dataType: 'json'
             });
+
+            return editor && typeof editor.trackRequest === 'function'
+                ? editor.trackRequest(xhr)
+                : xhr;
         }
     });
 });

@@ -9,6 +9,10 @@ declare(strict_types=1);
 
 namespace Hryvinskyi\EmailTemplateEditor\Test\Unit\Model;
 
+use Hryvinskyi\EmailTemplateEditor\Model\CssColorConverter;
+use Hryvinskyi\EmailTemplateEditor\Model\Color\ColorMixer;
+use Hryvinskyi\EmailTemplateEditor\Model\Color\ColorParser;
+use Hryvinskyi\EmailTemplateEditor\Model\CssImportantPromoter;
 use Hryvinskyi\EmailTemplateEditor\Model\CssInliner;
 use Hryvinskyi\EmailTemplateEditor\Model\CssLayerFlattener;
 use Hryvinskyi\EmailTemplateEditor\Model\CssVariableResolver;
@@ -42,17 +46,20 @@ class CssInlinerIntegrationTest extends TestCase
 
         $this->generator = new UtilityCssGenerator();
         $this->inliner = new CssInliner(
-            new CssVariableResolver(),
+            new CssVariableResolver(new CssColorConverter(new ColorParser(), new ColorMixer())),
             new NullLogger(),
-            new CssLayerFlattener()
+            new CssLayerFlattener(),
+            new CssImportantPromoter()
         );
     }
 
     public function testImportantBgClassWinsOverElementRule(): void
     {
-        $themeCss = "@theme { --color-primary: #131CCF; }";
-        $css = $this->generator->generate($themeCss)
-            . "\n.header { background-color: #153453; }";
+        // Mirrors the production composition: UtilityCssGenerator emits the theme's own
+        // baseline rules verbatim first and appends the token-derived utilities after them,
+        // so an equally specific utility wins on source order.
+        $themeCss = "@theme { --color-primary: #131CCF; }\n.header { background-color: #153453; }";
+        $css = $this->generator->generate($themeCss);
 
         $html = '<table><tr><td class="header !bg-primary">x</td></tr></table>';
         $out = $this->inliner->inline($html, null, null, $css);
@@ -62,6 +69,21 @@ class CssInlinerIntegrationTest extends TestCase
             $out,
             'The !bg-primary override must win over .header background-color'
         );
+    }
+
+    /**
+     * The plain (unprefixed) utility has to win over a baseline rule of the same specificity
+     * too - the `!` modifier must not be the only thing that makes an override stick.
+     */
+    public function testPlainUtilityClassAlsoWinsOverElementRule(): void
+    {
+        $themeCss = "@theme { --color-primary: #131CCF; }\n.header { background-color: #153453; }";
+        $css = $this->generator->generate($themeCss);
+
+        $html = '<table><tr><td class="header bg-primary">x</td></tr></table>';
+        $out = $this->inliner->inline($html, null, null, $css);
+
+        self::assertMatchesRegularExpression('/<td[^>]*style="[^"]*background-color:\s*#131CCF/i', $out);
     }
 
     public function testTextColorTokenIsInlinedOnMatchingClass(): void
@@ -132,6 +154,20 @@ class CssInlinerIntegrationTest extends TestCase
         $custom = '.link { color: hotpink; }';
         $out = $this->inliner->inline($html, $custom);
         self::assertMatchesRegularExpression('/style="[^"]*color:\s*hotpink/i', $out);
+    }
+
+    /**
+     * The parts are concatenated theme → tailwind → custom, the same order
+     * `EmailTemplatePlugin::buildCombinedCss` uses for real sends, so the preview resolves a
+     * conflict between equally specific rules the way the delivered email will.
+     */
+    public function testCustomCssWinsOverThemeCssOnEqualSpecificity(): void
+    {
+        $html = '<a class="link">x</a>';
+        $out = $this->inliner->inline($html, '.link { color: hotpink; }', null, '.link { color: teal; }');
+
+        self::assertMatchesRegularExpression('/style="[^"]*color:\s*hotpink/i', $out);
+        self::assertDoesNotMatchRegularExpression('/style="[^"]*color:\s*teal/i', $out);
     }
 
     // ---------------------------------------------------------------------------------------
@@ -248,6 +284,160 @@ HTML;
             $out,
             '!bg-primary from embedded <style> must resolve --color-primary and inline'
         );
+    }
+
+    /**
+     * `border-2` / `border-b` only ever emit `border-style: var(--tw-border-style)`; the
+     * value itself lives in an `@property` registration. Both that rule and the
+     * `@layer properties` fallback are dropped during flattening, so without harvesting the
+     * registered `initial-value` the declaration inlines as an unresolvable `var()` - which
+     * computes to `border-style: none` and renders no border at all.
+     */
+    public function testBorderStyleSlotResolvesFromPropertyInitialValue(): void
+    {
+        $css = <<<'CSS'
+@layer utilities {
+  .border-2 { border-style: var(--tw-border-style); border-width: 2px; }
+  .border-b { border-bottom-style: var(--tw-border-style); border-bottom-width: 1px; }
+}
+@property --tw-border-style {
+  syntax: "*";
+  inherits: false;
+  initial-value: solid;
+}
+@layer properties {
+  @supports ((-webkit-hyphens: none)) {
+    *, ::before, ::after, ::backdrop { --tw-border-style: solid; }
+  }
+}
+CSS;
+        $html = '<table><tr><td class="border-b border-2">x</td></tr></table>';
+        $out = $this->inliner->inline($html, null, $css);
+
+        self::assertStringNotContainsString('var(--tw-border-style)', $out);
+        self::assertMatchesRegularExpression('/<td[^>]*style="[^"]*border-style:\s*solid/i', $out);
+        self::assertMatchesRegularExpression('/<td[^>]*style="[^"]*border-bottom-style:\s*solid/i', $out);
+        self::assertMatchesRegularExpression('/<td[^>]*style="[^"]*border-width:\s*2px/i', $out);
+    }
+
+    /**
+     * Tailwind v4's default palette lives behind `--color-*` variables holding `oklch()`
+     * values, which Outlook, Yahoo and every pre-2023 client drop outright - for a colour
+     * property that means falling back to `currentColor`. The pipeline converts them to sRGB
+     * after variable substitution, so what lands inline is a plain hex.
+     */
+    public function testTailwindOklchPaletteColorsAreInlinedAsSrgb(): void
+    {
+        $css = <<<'CSS'
+@layer theme {
+  :root, :host { --color-gray-700: oklch(37.3% 0.034 259.733); }
+}
+@layer utilities {
+  .border-gray-700 { border-color: var(--color-gray-700); }
+}
+CSS;
+        $html = '<table><tr><td class="border-gray-700">x</td></tr></table>';
+        $out = $this->inliner->inline($html, null, $css);
+
+        self::assertStringNotContainsString('oklch', $out);
+        self::assertMatchesRegularExpression('/<td[^>]*style="[^"]*border-color:\s*#364153/i', $out);
+    }
+
+    /**
+     * Magento's {{inlinecss}} directive writes css/email-inline.css into `style="…"`
+     * attributes before this inliner ever runs, and Emogrifier re-applies pre-existing
+     * inline styles after every stylesheet rule. A plain `.text-black` therefore used to
+     * lose to the stock `a { color: … }` that had already been inlined. The editor's CSS is
+     * promoted to `!important` so it wins - and Emogrifier strips the annotation again, so
+     * the emitted style attribute stays clean.
+     */
+    public function testEditorCssBeatsAlreadyInlinedTemplateStyles(): void
+    {
+        $html = '<a class="text-black" href="#" style="color: #e9501c; text-decoration: none;">About Us</a>';
+        $css = '@layer utilities { .text-black { color: #000000; } }';
+
+        $out = $this->inliner->inline($html, null, $css);
+
+        // Emogrifier's CSS parser normalises #000000 down to its short form.
+        self::assertMatchesRegularExpression('/<a[^>]*style="[^"]*color:\s*#(?:000|000000)\b/i', $out);
+        self::assertDoesNotMatchRegularExpression('/<a[^>]*style="[^"]*color:\s*#e9501c/i', $out);
+        self::assertStringNotContainsString('!important', $out);
+        // Declarations the editor does not touch must survive untouched.
+        self::assertMatchesRegularExpression('/<a[^>]*style="[^"]*text-decoration:\s*none/i', $out);
+    }
+
+    /**
+     * The same precedence rule has to hold for the CSS that arrives as an embedded
+     * `<style>` block - the shape `EmailTemplatePlugin` produces for a header/footer
+     * override pulled into a parent template via `{{template config_path="…"}}`. The plugin
+     * promotes that block before embedding it, so it is already `!important` here.
+     */
+    public function testPromotedEmbeddedStyleBlockBeatsAlreadyInlinedTemplateStyles(): void
+    {
+        $assembledHtml = <<<'HTML'
+<style type="text/css">
+.text-black { color: #000000 !important; }
+</style>
+<a class="text-black" href="#" style="color: #e9501c; text-decoration: none;">About Us</a>
+HTML;
+
+        $out = $this->inliner->inline($assembledHtml);
+
+        // Emogrifier's CSS parser normalises #000000 down to its short form.
+        self::assertMatchesRegularExpression('/<a[^>]*style="[^"]*color:\s*#(?:000|000000)\b/i', $out);
+        self::assertDoesNotMatchRegularExpression('/<a[^>]*style="[^"]*color:\s*#e9501c/i', $out);
+    }
+
+    /**
+     * Only the editor's own CSS is promoted. A base-template `<style>` block travelling in
+     * the markup keeps stock precedence, so it must not start overriding the inline styles
+     * Magento produced for templates that carry no editor CSS.
+     */
+    public function testBaseTemplateStyleBlocksAreNotPromoted(): void
+    {
+        $assembledHtml = <<<'HTML'
+<style type="text/css">
+a { color: #123456; }
+</style>
+<a href="#" style="color: #e9501c;">About Us</a>
+HTML;
+
+        $out = $this->inliner->inline($assembledHtml);
+
+        self::assertMatchesRegularExpression('/<a[^>]*style="[^"]*color:\s*#e9501c/i', $out);
+    }
+
+    /**
+     * Emogrifier ranks a selector by counting `.`/`[`/`:` followed by a *word* character, so
+     * every escaped Tailwind class (`.\!text-black`, `.p-\[10px\]`, `.w-1\/2`, `.p-1\.5`)
+     * scored 1 - element-level - and was applied before any plain class rule instead of
+     * after it. The inliner restates those selectors as `[class~="…"]` to restore the tie.
+     */
+    public function testEscapedUtilityClassOutranksAnEarlierPlainClassRule(): void
+    {
+        $css = <<<'CSS'
+.header { padding: 30px; color: #153453; }
+@layer utilities {
+  .p-\[10px\] { padding: 10px; }
+  .\!text-black { color: #000000 !important; }
+}
+CSS;
+        $html = '<table><tr><td class="header p-[10px] !text-black">x</td></tr></table>';
+        $out = $this->inliner->inline($html, null, $css);
+
+        self::assertMatchesRegularExpression('/<td[^>]*style="[^"]*padding:\s*10px/i', $out);
+        self::assertDoesNotMatchRegularExpression('/<td[^>]*style="[^"]*padding:\s*30px/i', $out);
+        self::assertMatchesRegularExpression('/<td[^>]*style="[^"]*color:\s*#(?:000|000000)\b/i', $out);
+    }
+
+    public function testEscapedFractionAndDecimalClassesStillMatchTheirElements(): void
+    {
+        $css = '@layer utilities { .w-1\/2 { width: 50%; } .p-1\.5 { padding: 6px; } }';
+        $html = '<div class="w-1/2 p-1.5">x</div>';
+        $out = $this->inliner->inline($html, null, $css);
+
+        self::assertMatchesRegularExpression('/<div[^>]*style="[^"]*width:\s*50%/i', $out);
+        self::assertMatchesRegularExpression('/<div[^>]*style="[^"]*padding:\s*6px/i', $out);
     }
 
     public function testTailwindV4ThemeLayerVariablesAreResolved(): void

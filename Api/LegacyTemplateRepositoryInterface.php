@@ -22,6 +22,19 @@ interface LegacyTemplateRepositoryInterface
     public function getByOrigCode(string $origCode): array;
 
     /**
+     * Get legacy email_template rows for many orig_template_code values in a single round trip
+     *
+     * The plural form of getByOrigCode(), for callers walking a whole template list. An orig code
+     * with no rows is absent from the result rather than mapped to an empty array. Within a code
+     * the rows keep ascending template_id order, as the single-code form returns them. Passing an
+     * empty list returns an empty result without querying.
+     *
+     * @param string[] $origCodes
+     * @return array<string, BackendTemplate[]> Rows grouped by orig_template_code
+     */
+    public function getByOrigCodes(array $origCodes): array;
+
+    /**
      * Load a single legacy email_template row by its primary key
      *
      * Loads with the plugin bypass flag enabled so the runtime overlay does not
@@ -44,4 +57,15 @@ interface LegacyTemplateRepositoryInterface
      * @return int[]
      */
     public function getScopeBindings(int $templateId): array;
+
+    /**
+     * Resolve the store views an already-loaded legacy template is referenced from
+     *
+     * Same answer as getScopeBindings(), for callers that already hold the row and would otherwise
+     * pay for a second load of it. Returns an empty array when the model carries no id.
+     *
+     * @param BackendTemplate $template
+     * @return int[]
+     */
+    public function getScopeBindingsForTemplate(BackendTemplate $template): array;
 }

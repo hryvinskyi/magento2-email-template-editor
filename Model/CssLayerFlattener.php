@@ -18,10 +18,27 @@ class CssLayerFlattener implements CssLayerFlattenerInterface
      */
     public function flatten(string $css): string
     {
-        // Drop @property rules (no nested braces inside)
-        $css = (string)preg_replace(
-            '/@property\s+--[\w-]+\s*\{[^{}]*\}/i',
-            '',
+        // Drop @property rules (no nested braces inside), but keep their `initial-value`
+        // first. Tailwind v4 registers composition slots such as `--tw-border-style` with
+        // `@property --tw-border-style { syntax: "*"; inherits: false; initial-value: solid }`
+        // and only ever emits `border-style: var(--tw-border-style)` in the utility itself.
+        // Dropping both that rule and the `@layer properties` fallback left the var()
+        // unresolvable, so `.border-2` inlined as `border-style: var(--tw-border-style);
+        // border-width: 2px` - an invalid declaration that computes to `border-style: none`,
+        // i.e. an invisible border. Harvesting the registered defaults keeps them resolvable.
+        $propertyDefaults = [];
+        $css = (string)preg_replace_callback(
+            '/@property\s+(--[\w-]+)\s*\{([^{}]*)\}/i',
+            static function (array $matches) use (&$propertyDefaults): string {
+                if (preg_match('/(?:^|;)\s*initial-value\s*:\s*([^;{}]+)/i', $matches[2], $valueMatch) === 1) {
+                    $value = trim($valueMatch[1]);
+                    if ($value !== '') {
+                        $propertyDefaults[trim($matches[1])] = $value;
+                    }
+                }
+
+                return '';
+            },
             $css
         );
 
@@ -61,6 +78,39 @@ class CssLayerFlattener implements CssLayerFlattenerInterface
             );
         } while ($count > 0);
 
-        return $css;
+        return $this->prependPropertyDefaults($css, $propertyDefaults);
+    }
+
+    /**
+     * Emit the harvested `@property` defaults as a leading `:root { … }` block
+     *
+     * The block goes *first* so that it loses to any later declaration in `CssVariableResolver`'s
+     * flat, last-wins variable map. The block itself never reaches the inliner - the resolver
+     * strips custom-property declarations and then removes the rule block left empty behind them.
+     *
+     * KNOWN LIMITATION: that map is document-global, so it cannot express "this slot has this
+     * value *inside this rule*". A single `.border-dashed { --tw-border-style: dashed }`
+     * anywhere in the stylesheet therefore turns every `border-*` utility dashed, whether or
+     * not the element carries the class. Hoisting the default does not introduce that bug -
+     * it is how the resolver has always worked, and it affects every Tailwind v4 composition
+     * slot equally (`--tw-shadow`, `--tw-rotate`, `--tw-gradient-from`, …). Fixing it properly
+     * means giving the resolver per-rule scope rather than one global map.
+     *
+     * @param string $css
+     * @param array<string, string> $propertyDefaults Map of custom property name to initial value
+     * @return string
+     */
+    private function prependPropertyDefaults(string $css, array $propertyDefaults): string
+    {
+        if ($propertyDefaults === []) {
+            return $css;
+        }
+
+        $declarations = '';
+        foreach ($propertyDefaults as $name => $value) {
+            $declarations .= $name . ': ' . $value . ';';
+        }
+
+        return ':root{' . $declarations . '}' . "\n" . $css;
     }
 }

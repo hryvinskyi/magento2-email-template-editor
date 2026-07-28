@@ -16,11 +16,10 @@ var config = {
             'emailEditorPublishDialog': 'Hryvinskyi_EmailTemplateEditor/js/email-editor/publish-dialog',
             'emailEditorDiffEngine': 'Hryvinskyi_EmailTemplateEditor/js/email-editor/diff-engine',
             'emailEditorVariableChooser': 'Hryvinskyi_EmailTemplateEditor/js/email-editor/variable-chooser',
+            'emailEditorVariableInspector': 'Hryvinskyi_EmailTemplateEditor/js/email-editor/knowledge/variable-inspector',
             'emailEditorCustomCssEditor': 'Hryvinskyi_EmailTemplateEditor/js/email-editor/custom-css-editor',
             'emailEditorDraftManager': 'Hryvinskyi_EmailTemplateEditor/js/email-editor/draft-manager',
-            'emailEditorHistoryPanel': 'Hryvinskyi_EmailTemplateEditor/js/email-editor/history-panel',
             'emailEditorSchedulePanel': 'Hryvinskyi_EmailTemplateEditor/js/email-editor/schedule-panel',
-            'emailEditorAjaxService': 'Hryvinskyi_EmailTemplateEditor/js/email-editor/ajax-service',
             'emailEditorDraftListPanel': 'Hryvinskyi_EmailTemplateEditor/js/email-editor/draft-list-panel',
             'emailEditorMoreMenu': 'Hryvinskyi_EmailTemplateEditor/js/email-editor/more-menu',
             'emailEditorTailwindCompiler': 'Hryvinskyi_EmailTemplateEditor/js/email-editor/tailwind-compiler'

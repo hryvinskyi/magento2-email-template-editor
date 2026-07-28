@@ -67,6 +67,41 @@ class CssLayerFlattenerTest extends TestCase
         self::assertStringContainsString('.keep', $out);
     }
 
+    public function testPropertyInitialValueIsHoistedIntoRootBlock(): void
+    {
+        $css = '@layer utilities { .border-2 { border-style: var(--tw-border-style); border-width: 2px; } }
+                @property --tw-border-style { syntax: "*"; inherits: false; initial-value: solid; }';
+        $out = $this->flattener->flatten($css);
+
+        self::assertStringNotContainsString('@property', $out);
+        self::assertStringContainsString('--tw-border-style: solid;', $out);
+        // Must lead the output so per-utility declarations still win in the resolver's map.
+        self::assertStringStartsWith(':root{', $out);
+    }
+
+    public function testPropertyWithoutInitialValueHoistsNothing(): void
+    {
+        $css = '@property --tw-invert { syntax: "*"; inherits: false; }
+                .keep { color: red; }';
+        $out = $this->flattener->flatten($css);
+
+        self::assertStringNotContainsString(':root{', $out);
+        self::assertStringContainsString('.keep', $out);
+    }
+
+    public function testHoistedDefaultDoesNotOverrideAPerRuleDeclaration(): void
+    {
+        $css = '@property --tw-border-style { syntax: "*"; inherits: false; initial-value: solid; }
+                @layer utilities { .border-dashed { --tw-border-style: dashed; border-style: dashed; } }';
+        $out = $this->flattener->flatten($css);
+
+        self::assertLessThan(
+            strpos($out, '--tw-border-style: dashed'),
+            strpos($out, '--tw-border-style: solid'),
+            'The registered default must precede per-rule declarations (the resolver is last-wins)'
+        );
+    }
+
     public function testMultipleLayerNamesAreUnwrappedWhenNoDropName(): void
     {
         $out = $this->flattener->flatten('@layer theme, utilities { .x { color: red; } }');

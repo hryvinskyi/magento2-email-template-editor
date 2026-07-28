@@ -21,6 +21,21 @@ use Magento\Framework\Stdlib\DateTime\TimezoneInterface;
 class TemplateOverrideRepository implements TemplateOverrideRepositoryInterface
 {
     /**
+     * Fields a restricted select always carries, whatever the caller asked for
+     *
+     * entity_id and template_identifier identify and group the row; store_id and status are what
+     * every caller buckets on; is_active is read through (bool)(int)getData(), so leaving the
+     * column unselected would silently report an active override as inactive.
+     */
+    private const ALWAYS_SELECTED_FIELDS = [
+        TemplateOverrideInterface::ENTITY_ID,
+        TemplateOverrideInterface::TEMPLATE_IDENTIFIER,
+        TemplateOverrideInterface::STORE_ID,
+        TemplateOverrideInterface::STATUS,
+        TemplateOverrideInterface::IS_ACTIVE,
+    ];
+
+    /**
      * @param TemplateOverrideFactory $overrideFactory
      * @param TemplateOverrideResource $resource
      * @param CollectionFactory $collectionFactory
@@ -159,6 +174,54 @@ class TemplateOverrideRepository implements TemplateOverrideRepositoryInterface
 //        $collection->setOrder('updated_at', 'DESC');
 
         return $collection->getItems();
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function getOverridesForIdentifiers(
+        array $identifiers,
+        array $storeIds,
+        array $statuses = [],
+        array $fields = []
+    ): array {
+        $identifiers = array_values(array_unique(array_map('strval', $identifiers)));
+        $storeIds = array_values(array_unique(array_map('intval', $storeIds)));
+
+        // An empty IN list is not an error — the adapter rewrites it to IN(NULL), which is valid
+        // SQL that matches nothing. The guard exists to skip a round trip whose answer is known.
+        if ($identifiers === [] || $storeIds === []) {
+            return [];
+        }
+
+        $collection = $this->collectionFactory->create();
+
+        if ($fields !== []) {
+            $collection->addFieldToSelect(
+                array_values(array_unique(array_merge(self::ALWAYS_SELECTED_FIELDS, array_map('strval', $fields))))
+            );
+        }
+
+        $collection->addFieldToFilter(TemplateOverrideInterface::TEMPLATE_IDENTIFIER, ['in' => $identifiers]);
+        $collection->addFieldToFilter(TemplateOverrideInterface::STORE_ID, ['in' => $storeIds]);
+
+        // The status list is deliberately not pushed into SQL. draft, published and scheduled are
+        // the only values the column ever holds, so filtering on them selects nothing out while
+        // multiplying the number of index ranges the optimizer has to consider. The caller has to
+        // bucket by status in PHP anyway.
+        $allowedStatuses = $statuses !== [] ? array_flip(array_map('strval', $statuses)) : null;
+
+        $grouped = [];
+
+        foreach ($collection->getItems() as $override) {
+            if ($allowedStatuses !== null && !isset($allowedStatuses[$override->getStatus()])) {
+                continue;
+            }
+
+            $grouped[(string)$override->getTemplateIdentifier()][] = $override;
+        }
+
+        return $grouped;
     }
 
     /**

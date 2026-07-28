@@ -9,10 +9,19 @@ declare(strict_types=1);
 
 namespace Hryvinskyi\EmailTemplateEditor\Model;
 
+use Hryvinskyi\EmailTemplateEditor\Api\CssColorConverterInterface;
 use Hryvinskyi\EmailTemplateEditor\Api\CssVariableResolverInterface;
 
 class CssVariableResolver implements CssVariableResolverInterface
 {
+    /**
+     * @param CssColorConverterInterface $colorConverter
+     */
+    public function __construct(
+        private readonly CssColorConverterInterface $colorConverter
+    ) {
+    }
+
     /**
      * {@inheritDoc}
      */
@@ -20,7 +29,10 @@ class CssVariableResolver implements CssVariableResolverInterface
     {
         $variables = $this->extractVariables($css);
         $css = $this->replaceVarReferences($css, $variables);
-        $css = $this->convertModernColorSyntax($css);
+        // Colour conversion has to run *after* substitution: Tailwind v4 keeps its whole
+        // palette behind `--color-*` variables whose values are `oklch(…)`, so before this
+        // point there is nothing to convert.
+        $css = $this->colorConverter->toLegacy($css);
         $css = $this->removeVariableDeclarations($css);
         $css = $this->removeEmptyRuleBlocks($css);
 
@@ -95,38 +107,6 @@ class CssVariableResolver implements CssVariableResolverInterface
         }
 
         return $css;
-    }
-
-    /**
-     * Convert modern CSS color syntax to legacy format for email client compatibility
-     *
-     * Converts rgb(R G B / alpha) to rgba(R, G, B, alpha) and
-     * hsl(H S L / alpha) to hsla(H, S, L, alpha) since Emogrifier
-     * and many email clients do not support the modern space-separated syntax.
-     *
-     * @param string $css CSS content to process
-     * @return string CSS with modern color functions converted to legacy format
-     */
-    private function convertModernColorSyntax(string $css): string
-    {
-        // Match rgb(R G B / alpha) or hsl(H S L / alpha)
-        return (string) preg_replace_callback(
-            '/(rgb|hsl)a?\(\s*(\d+(?:\.\d+)?%?)\s+(\d+(?:\.\d+)?%?)\s+(\d+(?:\.\d+)?%?)\s*(?:\/\s*(\d+(?:\.\d+)?%?))?\s*\)/',
-            static function (array $matches): string {
-                $func = $matches[1];
-                $v1 = $matches[2];
-                $v2 = $matches[3];
-                $v3 = $matches[4];
-                $alpha = $matches[5] ?? null;
-
-                if ($alpha !== null) {
-                    return $func . 'a(' . $v1 . ', ' . $v2 . ', ' . $v3 . ', ' . $alpha . ')';
-                }
-
-                return $func . '(' . $v1 . ', ' . $v2 . ', ' . $v3 . ')';
-            },
-            $css
-        );
     }
 
     /**

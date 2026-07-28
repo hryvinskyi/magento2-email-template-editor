@@ -15,12 +15,25 @@ use Magento\Email\Model\BackendTemplate;
 use Magento\Email\Model\BackendTemplateFactory;
 use Magento\Email\Model\ResourceModel\Template\CollectionFactory;
 use Magento\Framework\App\Config\ScopeConfigInterface;
+use Magento\Framework\DataObject;
+use Magento\Framework\ObjectManager\ResetAfterRequestInterface;
 use Magento\Store\Api\WebsiteRepositoryInterface;
 use Magento\Store\Model\StoreManagerInterface;
 use Psr\Log\LoggerInterface;
 
-class LegacyTemplateRepository implements LegacyTemplateRepositoryInterface
+class LegacyTemplateRepository implements LegacyTemplateRepositoryInterface, ResetAfterRequestInterface
 {
+    /**
+     * Resolved scope bindings, keyed by legacy template id
+     *
+     * A binding is a scan of core_config_data and cannot change while a request is in flight, so
+     * the answer is remembered for the life of the request. Only successful resolutions are kept:
+     * a failure is logged and left unremembered so it is not turned into a permanent empty answer.
+     *
+     * @var array<int, int[]>
+     */
+    private array $scopeBindings = [];
+
     /**
      * @param BackendTemplateFactory $backendTemplateFactory
      * @param CollectionFactory $collectionFactory
@@ -44,27 +57,41 @@ class LegacyTemplateRepository implements LegacyTemplateRepositoryInterface
      */
     public function getByOrigCode(string $origCode): array
     {
-        if ($origCode === '') {
+        return $this->getByOrigCodes([$origCode])[$origCode] ?? [];
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function getByOrigCodes(array $origCodes): array
+    {
+        $codes = array_values(
+            array_unique(
+                array_filter(array_map('strval', $origCodes), static fn (string $code): bool => $code !== '')
+            )
+        );
+
+        // An empty IN list is not an error — the adapter rewrites it to IN(NULL), which is valid
+        // SQL that matches nothing. The guard exists to skip a round trip whose answer is known.
+        if ($codes === []) {
             return [];
         }
 
         try {
             $collection = $this->collectionFactory->create();
-            $collection->addFieldToFilter('orig_template_code', $origCode);
+            $collection->addFieldToFilter('orig_template_code', ['in' => $codes]);
             $collection->setOrder('template_id', 'ASC');
 
-            $rows = [];
+            $grouped = [];
             foreach ($collection as $row) {
-                $template = $this->loadById((int)$row->getId());
-                if ($template !== null) {
-                    $rows[] = $template;
-                }
+                $grouped[(string)$row->getData('orig_template_code')][] = $this->hydrate($row);
             }
 
-            return $rows;
+            return $grouped;
         } catch (\Exception $e) {
             $this->logger->warning(
-                'Failed to load legacy email_template rows for orig_template_code "' . $origCode . '": ' . $e->getMessage()
+                'Failed to load legacy email_template rows for orig_template_code "'
+                . implode('", "', $codes) . '": ' . $e->getMessage()
             );
 
             return [];
@@ -92,23 +119,19 @@ class LegacyTemplateRepository implements LegacyTemplateRepositoryInterface
             return [];
         }
 
+        if (isset($this->scopeBindings[$templateId])) {
+            return $this->scopeBindings[$templateId];
+        }
+
         try {
             $template = $this->loadById($templateId);
             if ($template === null || !$template->getId()) {
                 return [];
             }
 
-            $bindings = $template->getSystemConfigPathsWhereCurrentlyUsed();
-            $storeIds = [];
+            $this->scopeBindings[$templateId] = $this->resolveScopeBindings($template);
 
-            foreach ($bindings as $binding) {
-                $scope = $binding['scope'] ?? ScopeConfigInterface::SCOPE_TYPE_DEFAULT;
-                $scopeId = isset($binding['scope_id']) ? (int)$binding['scope_id'] : 0;
-
-                $storeIds = array_merge($storeIds, $this->resolveScopeToStoreIds($scope, $scopeId));
-            }
-
-            return array_values(array_unique($storeIds));
+            return $this->scopeBindings[$templateId];
         } catch (\Exception $e) {
             $this->logger->warning(
                 'Failed to resolve scope bindings for legacy template ID ' . $templateId . ': ' . $e->getMessage()
@@ -116,6 +139,88 @@ class LegacyTemplateRepository implements LegacyTemplateRepositoryInterface
 
             return [];
         }
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function getScopeBindingsForTemplate(BackendTemplate $template): array
+    {
+        $templateId = (int)$template->getId();
+        if ($templateId <= 0) {
+            return [];
+        }
+
+        if (isset($this->scopeBindings[$templateId])) {
+            return $this->scopeBindings[$templateId];
+        }
+
+        try {
+            $this->scopeBindings[$templateId] = $this->resolveScopeBindings($template);
+
+            return $this->scopeBindings[$templateId];
+        } catch (\Exception $e) {
+            $this->logger->warning(
+                'Failed to resolve scope bindings for legacy template ID ' . $templateId . ': ' . $e->getMessage()
+            );
+
+            return [];
+        }
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function _resetState(): void
+    {
+        $this->scopeBindings = [];
+    }
+
+    /**
+     * Translate a legacy template's core_config_data references into store ids
+     *
+     * Cannot be answered for several templates at once: the underlying lookup issues one query
+     * per model, and batching it would mean reimplementing that query against the resource model.
+     * Remembering the answer per template id is the useful stopping point.
+     *
+     * @param BackendTemplate $template
+     * @return int[]
+     */
+    private function resolveScopeBindings(BackendTemplate $template): array
+    {
+        $bindings = $template->getSystemConfigPathsWhereCurrentlyUsed();
+        $storeIds = [];
+
+        foreach ($bindings as $binding) {
+            $scope = $binding['scope'] ?? ScopeConfigInterface::SCOPE_TYPE_DEFAULT;
+            $scopeId = isset($binding['scope_id']) ? (int)$binding['scope_id'] : 0;
+
+            $storeIds = array_merge($storeIds, $this->resolveScopeToStoreIds($scope, $scopeId));
+        }
+
+        return array_values(array_unique($storeIds));
+    }
+
+    /**
+     * Build a backend template model from a row the collection already returned
+     *
+     * The collection is initialised with Magento\Email\Model\Template, but the config-binding
+     * lookup this repository exists to serve is declared on BackendTemplate only. Copying the
+     * row's data into a BackendTemplate gives the right type with no second round trip: the
+     * lookup needs the id plus the model's own injected collaborators, and neither the model nor
+     * its resource model defines an after-load hook, so nothing is skipped but the generic
+     * abstract-load event — which the bypass flag around a real load() exists to neutralise
+     * anyway.
+     *
+     * @param DataObject $row
+     * @return BackendTemplate
+     */
+    private function hydrate(DataObject $row): BackendTemplate
+    {
+        $template = $this->backendTemplateFactory->create();
+        $template->setData($row->getData());
+
+        return $template;
     }
 
     /**

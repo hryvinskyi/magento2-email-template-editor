@@ -1,0 +1,262 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+/**
+ * Copyright (c) 2026. Volodymyr Hryvinskyi. All rights reserved.
+ * Author: Volodymyr Hryvinskyi <volodymyr@hryvinskyi.com>
+ * GitHub: https://github.com/hryvinskyi
+ */
+-->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+
+    <xs:annotation>
+        <xs:documentation>
+            Schema of email_variables.xml, the merged configuration that carries the hand-written part
+            of the variable knowledge base. Any module may ship one; the files are merged the way every
+            Magento configuration is, so contributing an entry never means editing this module.
+
+            A variable is identified by its kind and expression together. That pair is what the merge
+            matches on and what the knowledge base looks entries up by, so the same pair contributed
+            twice describes one variable rather than two.
+
+            The enumerations below repeat sets that PHP also publishes - the directive kinds the
+            reference parser accepts, the output kinds, the origin kinds and the affordance kinds. A
+            schema cannot read a PHP constant, so the repetition is unavoidable; a unit test compares
+            each enumeration against the constants it mirrors, and fails when the two drift apart.
+
+            One rule the schema cannot state. Which parts an affordance needs depends on the value of
+            its kind attribute - a link needs a route, an instruction needs steps, an inline editor
+            needs an input type - and a conditional like that requires assertions, which arrived in
+            XSD 1.1 and are not available to the XSD 1.0 validator this configuration is checked with.
+            The converter enforces those requirements instead: an affordance missing what its kind
+            needs is dropped and reported, leaving the entry's description intact and its edit route
+            absent, rather than rendering as a control that does nothing when it is pressed.
+        </xs:documentation>
+    </xs:annotation>
+
+    <xs:element name="variables">
+        <xs:complexType>
+            <xs:sequence>
+                <xs:element name="variable" type="variableType" minOccurs="0" maxOccurs="unbounded"/>
+            </xs:sequence>
+        </xs:complexType>
+        <xs:unique name="uniqueDirectiveReference">
+            <xs:annotation>
+                <xs:documentation>
+                    One file may not describe the same kind and expression twice: the second entry
+                    would silently replace the first and nothing would say which of the two an
+                    administrator is reading.
+                </xs:documentation>
+            </xs:annotation>
+            <xs:selector xpath="variable"/>
+            <xs:field xpath="@kind"/>
+            <xs:field xpath="@expression"/>
+        </xs:unique>
+    </xs:element>
+
+    <xs:complexType name="variableType">
+        <xs:annotation>
+            <xs:documentation>
+                Children are written in this order: what it is, then how it is produced, then what can
+                be done about it, then what is easy to get wrong about it.
+            </xs:documentation>
+        </xs:annotation>
+        <xs:sequence>
+            <xs:element name="title" type="requiredText" minOccurs="1" maxOccurs="1"/>
+            <xs:element name="summary" type="requiredText" minOccurs="1" maxOccurs="1"/>
+            <xs:element name="origin" type="originType" minOccurs="1" maxOccurs="1"/>
+            <xs:element name="affordance" type="affordanceType" minOccurs="0" maxOccurs="1">
+                <xs:unique name="uniqueAffordanceParam">
+                    <xs:selector xpath="param"/>
+                    <xs:field xpath="@name"/>
+                </xs:unique>
+                <xs:unique name="uniqueAffordanceOption">
+                    <xs:selector xpath="option"/>
+                    <xs:field xpath="@value"/>
+                </xs:unique>
+            </xs:element>
+            <xs:element name="caveat" type="caveatType" minOccurs="0" maxOccurs="unbounded"/>
+        </xs:sequence>
+        <xs:attribute name="kind" type="directiveKindType" use="required"/>
+        <xs:attribute name="expression" type="xs:string" use="required">
+            <xs:annotation>
+                <xs:documentation>
+                    The normalised expression for this kind, empty for an entry that describes the
+                    kind itself rather than one particular directive. It is normalised again on the
+                    way in, so quoting and spacing do not have to be written exactly.
+                </xs:documentation>
+            </xs:annotation>
+        </xs:attribute>
+        <xs:attribute name="outputKind" type="outputKindType" use="optional" default="text">
+            <xs:annotation>
+                <xs:documentation>
+                    What sort of output the directive produces. Omitting it means plain text, which is
+                    the conservative answer: an entry must not be the reason a value starts being
+                    treated as markup.
+                </xs:documentation>
+            </xs:annotation>
+        </xs:attribute>
+    </xs:complexType>
+
+    <xs:complexType name="originType">
+        <xs:annotation>
+            <xs:documentation>
+                Prose describing how the value is produced, written for an administrator reading the
+                inspector. The locator is what identifies the value inside its origin - a
+                configuration path, a variable code, a class and method - and is omitted when the kind
+                has no such handle.
+            </xs:documentation>
+        </xs:annotation>
+        <xs:simpleContent>
+            <xs:extension base="requiredText">
+                <xs:attribute name="kind" type="originKindType" use="required"/>
+                <xs:attribute name="locator" type="xs:string" use="optional"/>
+            </xs:extension>
+        </xs:simpleContent>
+    </xs:complexType>
+
+    <xs:complexType name="caveatType">
+        <xs:annotation>
+            <xs:documentation>
+                One complete statement about something that is true and easy to get wrong. The
+                optional id is not shown anywhere; it exists so that a module adding a caveat to a
+                variable another module already describes is merged alongside the existing ones
+                instead of colliding with them.
+            </xs:documentation>
+        </xs:annotation>
+        <xs:simpleContent>
+            <xs:extension base="requiredText">
+                <xs:attribute name="id" type="xs:string" use="optional"/>
+            </xs:extension>
+        </xs:simpleContent>
+    </xs:complexType>
+
+    <xs:complexType name="affordanceType">
+        <xs:annotation>
+            <xs:documentation>
+                What an administrator can do about the value. A link carries a route and its
+                parameters - never a finished URL, because an admin URL is built per session and a
+                literal one would be dead by the time anybody followed it. An instruction carries
+                steps. An inline editor carries the kind of input it asks for, and its choices when
+                that input is a select; it may carry a route as well, and then also offers the page
+                that owns the value, for everything editing one field from a popover cannot do.
+            </xs:documentation>
+        </xs:annotation>
+        <xs:sequence>
+            <xs:element name="param" type="paramType" minOccurs="0" maxOccurs="unbounded"/>
+            <xs:element name="fragment" type="requiredText" minOccurs="0" maxOccurs="1"/>
+            <xs:element name="step" type="stepType" minOccurs="0" maxOccurs="unbounded"/>
+            <xs:element name="option" type="optionType" minOccurs="0" maxOccurs="unbounded"/>
+        </xs:sequence>
+        <xs:attribute name="kind" type="affordanceKindType" use="required"/>
+        <xs:attribute name="label" type="requiredText" use="required"/>
+        <xs:attribute name="route" type="xs:string" use="optional"/>
+        <xs:attribute name="editorType" type="editorTypeType" use="optional"/>
+        <xs:attribute name="scopeAware" type="xs:boolean" use="optional" default="false">
+            <xs:annotation>
+                <xs:documentation>
+                    Whether the page behind the link shows a different value per store view. When it
+                    does, the link carries the store view the editor is working in, so the
+                    administrator lands on the scope the message is actually sent in rather than on
+                    the default one.
+                </xs:documentation>
+            </xs:annotation>
+        </xs:attribute>
+    </xs:complexType>
+
+    <xs:complexType name="paramType">
+        <xs:simpleContent>
+            <xs:extension base="xs:string">
+                <xs:attribute name="name" type="requiredText" use="required"/>
+            </xs:extension>
+        </xs:simpleContent>
+    </xs:complexType>
+
+    <xs:complexType name="stepType">
+        <xs:simpleContent>
+            <xs:extension base="requiredText">
+                <xs:attribute name="id" type="xs:string" use="optional"/>
+            </xs:extension>
+        </xs:simpleContent>
+    </xs:complexType>
+
+    <xs:complexType name="optionType">
+        <xs:simpleContent>
+            <xs:extension base="requiredText">
+                <xs:attribute name="value" type="xs:string" use="required"/>
+            </xs:extension>
+        </xs:simpleContent>
+    </xs:complexType>
+
+    <xs:simpleType name="requiredText">
+        <xs:annotation>
+            <xs:documentation>
+                Text that has to say something: at least one character that is not whitespace.
+                Allowing an empty value would let an entry ship with a blank title or a blank step,
+                which reads to an administrator as a broken page rather than as missing content.
+            </xs:documentation>
+        </xs:annotation>
+        <xs:restriction base="xs:string">
+            <xs:pattern value="\s*\S[\s\S]*"/>
+        </xs:restriction>
+    </xs:simpleType>
+
+    <xs:simpleType name="directiveKindType">
+        <xs:restriction base="xs:string">
+            <xs:enumeration value="var"/>
+            <xs:enumeration value="config"/>
+            <xs:enumeration value="customVar"/>
+            <xs:enumeration value="trans"/>
+            <xs:enumeration value="block"/>
+            <xs:enumeration value="layout"/>
+            <xs:enumeration value="media"/>
+            <xs:enumeration value="store"/>
+            <xs:enumeration value="css"/>
+            <xs:enumeration value="template"/>
+            <xs:enumeration value="view"/>
+            <xs:enumeration value="protocol"/>
+            <xs:enumeration value="inlinecss"/>
+            <xs:enumeration value="depend"/>
+            <xs:enumeration value="if"/>
+            <xs:enumeration value="for"/>
+        </xs:restriction>
+    </xs:simpleType>
+
+    <xs:simpleType name="outputKindType">
+        <xs:restriction base="xs:string">
+            <xs:enumeration value="text"/>
+            <xs:enumeration value="html"/>
+            <xs:enumeration value="url"/>
+            <xs:enumeration value="currency"/>
+            <xs:enumeration value="date"/>
+            <xs:enumeration value="number"/>
+        </xs:restriction>
+    </xs:simpleType>
+
+    <xs:simpleType name="originKindType">
+        <xs:restriction base="xs:string">
+            <xs:enumeration value="config"/>
+            <xs:enumeration value="custom_variable"/>
+            <xs:enumeration value="template_var"/>
+            <xs:enumeration value="design_config"/>
+            <xs:enumeration value="computed"/>
+            <xs:enumeration value="directive"/>
+        </xs:restriction>
+    </xs:simpleType>
+
+    <xs:simpleType name="affordanceKindType">
+        <xs:restriction base="xs:string">
+            <xs:enumeration value="link"/>
+            <xs:enumeration value="inline"/>
+            <xs:enumeration value="instruction"/>
+            <xs:enumeration value="none"/>
+        </xs:restriction>
+    </xs:simpleType>
+
+    <xs:simpleType name="editorTypeType">
+        <xs:restriction base="xs:string">
+            <xs:enumeration value="text"/>
+            <xs:enumeration value="textarea"/>
+            <xs:enumeration value="select"/>
+        </xs:restriction>
+    </xs:simpleType>
+</xs:schema>

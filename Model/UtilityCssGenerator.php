@@ -10,8 +10,9 @@ declare(strict_types=1);
 namespace Hryvinskyi\EmailTemplateEditor\Model;
 
 use Hryvinskyi\EmailTemplateEditor\Api\UtilityCssGeneratorInterface;
+use Magento\Framework\ObjectManager\ResetAfterRequestInterface;
 
-class UtilityCssGenerator implements UtilityCssGeneratorInterface
+class UtilityCssGenerator implements UtilityCssGeneratorInterface, ResetAfterRequestInterface
 {
     /**
      * Mapping of token section keys to their CSS custom property prefixes
@@ -36,6 +37,20 @@ class UtilityCssGenerator implements UtilityCssGeneratorInterface
     ];
 
     /**
+     * Previously generated CSS, keyed by a hash of the theme string it was generated from
+     *
+     * Rendering one email runs this over the same theme several times — once for the message
+     * itself and once for each included fragment that carries an override — and each run is a
+     * dozen or so regular-expression sweeps over the whole theme source. The result depends on
+     * nothing but the input string, so the repeats can be answered from here. Being keyed on a
+     * hash of its own input, an entry cannot go stale; it can only accumulate, which is what
+     * _resetState() is for.
+     *
+     * @var array<string, string>
+     */
+    private array $generatedCss = [];
+
+    /**
      * {@inheritDoc}
      *
      * The input is now a Tailwind v4 CSS-first theme string (typically a leading
@@ -49,8 +64,34 @@ class UtilityCssGenerator implements UtilityCssGeneratorInterface
      *
      * Legacy JSON input (pre-v4) is auto-detected and passed through the legacy path so
      * stored themes that have not been migrated yet still render.
+     *
+     * Repeated calls with the same theme string are answered from a per-request memo; the output
+     * is identical either way, only the cost differs.
      */
     public function generate(string $theme): string
+    {
+        $cacheKey = md5($theme);
+
+        if (isset($this->generatedCss[$cacheKey])) {
+            return $this->generatedCss[$cacheKey];
+        }
+
+        $css = $this->build($theme);
+        $this->generatedCss[$cacheKey] = $css;
+
+        return $css;
+    }
+
+    /**
+     * Derive the utility CSS for a theme string
+     *
+     * Pure: it reads nothing but its argument and this class's own constant, so its result is
+     * safe to memoise against a hash of that argument.
+     *
+     * @param string $theme
+     * @return string
+     */
+    private function build(string $theme): string
     {
         $theme = trim($theme);
         if ($theme === '') {
@@ -618,5 +659,17 @@ class UtilityCssGenerator implements UtilityCssGeneratorInterface
     private function escapeValue(string $value): string
     {
         return preg_replace('/[;\{\}]/', '', $value) ?? $value;
+    }
+
+    /**
+     * @inheritDoc
+     *
+     * The memo cannot serve a wrong answer — it is keyed on a hash of the very string it was
+     * built from — but it does grow, so a long-lived process such as the order-email cron needs
+     * a point at which it is dropped.
+     */
+    public function _resetState(): void
+    {
+        $this->generatedCss = [];
     }
 }

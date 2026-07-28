@@ -108,6 +108,40 @@ interface TemplateOverrideRepositoryInterface
     public function getPublishedList(string $identifier, int $storeId): array;
 
     /**
+     * Get overrides for many template identifiers and store scopes in a single round trip
+     *
+     * This is the plural form of getPublishedList()/getScheduledOverrides()/getDrafts(): a caller
+     * that needs the overrides of a whole template list pays for one lookup instead of one per
+     * identifier per scope.
+     *
+     * An identifier with no matching rows is absent from the result rather than mapped to an empty
+     * array, so callers must default with `?? []`.
+     *
+     * The rows within an identifier come back **unordered**. The single-identifier methods above do
+     * not agree on an order — two of them impose none at all — so there is no single order this
+     * method could preserve. Ordering is the caller's policy and belongs in the caller.
+     *
+     * A non-empty $fields list yields **partially hydrated** entities: only the named fields, plus
+     * entity_id, template_identifier, store_id, status and is_active which are always included, are
+     * populated. Every other getter then reads as though its column were empty — notably
+     * getIsActive() would report false — so name every field you intend to read.
+     *
+     * Passing an empty $identifiers or $storeIds list returns an empty result without querying.
+     *
+     * @param string[] $identifiers Template identifiers to match, e.g. "sales_email_order_template"
+     * @param int[] $storeIds Store scopes to match; 0 is the default ("All Store Views") scope
+     * @param string[] $statuses TemplateOverrideInterface::STATUS_* values; empty means every status
+     * @param string[] $fields TemplateOverrideInterface::* field names; empty means every field
+     * @return array<string, TemplateOverrideInterface[]> Overrides grouped by template identifier
+     */
+    public function getOverridesForIdentifiers(
+        array $identifiers,
+        array $storeIds,
+        array $statuses = [],
+        array $fields = []
+    ): array;
+
+    /**
      * Get the immediate (no date range) published override for a template identifier and store ID
      *
      * @param string $identifier

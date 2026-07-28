@@ -9,6 +9,9 @@ declare(strict_types=1);
 
 namespace Hryvinskyi\EmailTemplateEditor\Test\Unit\Model;
 
+use Hryvinskyi\EmailTemplateEditor\Model\CssColorConverter;
+use Hryvinskyi\EmailTemplateEditor\Model\Color\ColorMixer;
+use Hryvinskyi\EmailTemplateEditor\Model\Color\ColorParser;
 use Hryvinskyi\EmailTemplateEditor\Model\CssVariableResolver;
 use PHPUnit\Framework\TestCase;
 
@@ -18,7 +21,7 @@ class CssVariableResolverTest extends TestCase
 
     protected function setUp(): void
     {
-        $this->resolver = new CssVariableResolver();
+        $this->resolver = new CssVariableResolver(new CssColorConverter(new ColorParser(), new ColorMixer()));
     }
 
     public function testSimpleVariableSubstitution(): void

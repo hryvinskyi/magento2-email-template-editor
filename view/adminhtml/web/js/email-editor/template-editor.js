@@ -8,14 +8,17 @@ define([
     'uiComponent',
     'ko',
     'jquery',
-    'uiRegistry'
-], function (Component, ko, $, registry) {
+    'uiRegistry',
+    'Hryvinskyi_EmailTemplateEditor/js/email-editor/knowledge/directive-decorator',
+    'Hryvinskyi_EmailTemplateEditor/js/email-editor/knowledge/directive-scanner'
+], function (Component, ko, $, registry, directiveDecorator, directiveScanner) {
     'use strict';
 
     return Component.extend({
         defaults: {
             template: 'Hryvinskyi_EmailTemplateEditor/email-editor/template-editor',
             editor: null,
+            _decorator: null,
             _lineWrapping: false,
             _readOnly: false
         },
@@ -71,6 +74,27 @@ define([
                     self.onContentChange();
                 });
 
+                // Directives are marked in a read-only document as well: explaining what a
+                // variable is and where it comes from is worth as much while reading a published
+                // version as while writing a draft. What changes is only what may be done about
+                // it, which is why the read-only state rides along with every activation instead
+                // of deciding whether one happens.
+                self._decorator = directiveDecorator.create(self.editor, {
+                    /**
+                     * Pass a clicked directive on, and open nothing.
+                     *
+                     * @param {Object} occurrence
+                     * @param {Object} anchor tracks the directive as the document is edited
+                     */
+                    onActivate: function (occurrence, anchor) {
+                        self.trigger('directiveActivate', {
+                            occurrence: occurrence,
+                            anchor: anchor,
+                            readOnly: self._readOnly
+                        });
+                    }
+                });
+
                 // Re-apply any read-only state requested before CodeMirror finished loading.
                 self.setReadOnly(self._readOnly);
             });
@@ -115,6 +139,12 @@ define([
         setValue: function (value) {
             if (this.editor) {
                 this.editor.setValue(value || '');
+            }
+
+            // The document was replaced rather than typed into, so there is no pause in the typing
+            // to wait for and waiting for one only shows the new content unmarked in the meantime.
+            if (this._decorator) {
+                this._decorator.refresh();
             }
         },
 
@@ -214,6 +244,126 @@ define([
             var cursor = this.editor.getCursor();
 
             this.editor.replaceRange(text, cursor);
+        },
+
+        /**
+         * Rewrite the `|...` formatting of one directive, and nothing else.
+         *
+         * The only route this module has for changing a directive's formatting, and deliberately
+         * the only one: the write is bounded to the directive's own chain, so what a directive
+         * points at is not among the bytes being replaced and a formatting change cannot turn into
+         * a different variable. It lives here because this component owns the editor and owns the
+         * read-only state - a caller reaching past it would have neither, and would end up
+         * rebuilding the whole directive text, which is the one thing the bounded span exists to
+         * prevent.
+         *
+         * The anchor rather than the caller's offsets decides where to write. Offsets are absolute
+         * and go stale as soon as anything is typed anywhere earlier in the document; the caller's
+         * own previous call through here counts, because the marks are redrawn only after the
+         * document settles and a second change inside that window would be measured against the
+         * document as it was before the first. The anchor is moved by the editor along with the
+         * text it brackets, so it is asked instead, and what it points at is read again and matched
+         * against what the caller last saw before a single byte is replaced.
+         *
+         * Nothing is thrown and nothing quietly does nothing: a refusal comes back as a reason, so
+         * that a formatting change which did not happen can be said out loud rather than read by
+         * the admin as one that did not stick.
+         *
+         * @param {Object} anchor the mark handed out when the directive was activated
+         * @param {string} chainText the chain to write, `''` to remove the formatting entirely
+         * @param {{reference: string, modifierText: string}} expected the directive the caller
+         *        believes it is editing, and the chain it last displayed
+         * @return {{written: boolean, reason: string, occurrence: Object|null}} `reason` is one of
+         *         `written`, `readOnly`, `noEditor`, `invalidChain`, `gone` or `changed`;
+         *         `occurrence` is the directive as it stands after a write and null otherwise
+         */
+        replaceModifierSpan: function (anchor, chainText, expected) {
+            var range,
+                rederived,
+                current;
+
+            if (!this.editor) {
+                return {written: false, reason: 'noEditor', occurrence: null};
+            }
+
+            if (this._readOnly) {
+                return {written: false, reason: 'readOnly', occurrence: null};
+            }
+
+            if (!directiveScanner.isWritableChain(chainText)) {
+                return {written: false, reason: 'invalidChain', occurrence: null};
+            }
+
+            if (!anchor || typeof anchor.find !== 'function') {
+                return {written: false, reason: 'gone', occurrence: null};
+            }
+
+            range = anchor.find();
+
+            if (!range) {
+                return {written: false, reason: 'gone', occurrence: null};
+            }
+
+            rederived = directiveScanner.rederive(
+                this.editor.getValue(),
+                this.editor.indexFromPos(range.from),
+                this.editor.indexFromPos(range.to),
+                expected
+            );
+
+            if (rederived.reason !== 'ok') {
+                return {written: false, reason: rederived.reason, occurrence: null};
+            }
+
+            this.editor.replaceRange(
+                chainText,
+                this.editor.posFromIndex(rederived.occurrence.modifierStart),
+                this.editor.posFromIndex(rederived.occurrence.modifierEnd)
+            );
+
+            // The chain that was just written is strictly inside the anchor, so the anchor still
+            // brackets the whole directive and reading it again is how the caller learns what it
+            // now holds. Without that, the caller's next call would be matched against the chain
+            // it displayed before this one and refused.
+            current = this._occurrenceAt(anchor);
+
+            return {written: true, reason: 'written', occurrence: current};
+        },
+
+        /**
+         * Read the directive an anchor currently brackets.
+         *
+         * @param {Object} anchor
+         * @return {Object|null}
+         * @private
+         */
+        _occurrenceAt: function (anchor) {
+            var range = anchor.find(),
+                found;
+
+            if (!range) {
+                return null;
+            }
+
+            found = directiveScanner.scanRange(
+                this.editor.getValue(),
+                this.editor.indexFromPos(range.from),
+                this.editor.indexFromPos(range.to)
+            );
+
+            return found.length === 1 ? found[0] : null;
+        },
+
+        /**
+         * @inheritDoc
+         */
+        destroy: function () {
+            if (this._decorator) {
+                this._decorator.destroy();
+                this._decorator = null;
+            }
+
+            this._super();
         }
     });
 });

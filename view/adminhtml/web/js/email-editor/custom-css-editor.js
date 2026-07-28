@@ -7,8 +7,9 @@
 define([
     'uiComponent',
     'ko',
-    'jquery'
-], function (Component, ko, $) {
+    'jquery',
+    'Hryvinskyi_EmailTemplateEditor/js/email-editor/parent-resolver'
+], function (Component, ko, $, parentResolver) {
     'use strict';
 
     return Component.extend({
@@ -139,13 +140,18 @@ define([
         },
 
         /**
-         * Notify the parent component that the CSS content has changed.
+         * Notify the editor that the CSS content has changed.
+         *
+         * This is the only signal the editor gets that the custom CSS was edited: it is
+         * what marks the draft dirty, arms the autosave and re-renders the preview.
+         *
+         * @return {void}
          */
         onContentChange: function () {
-            var parent = this.source || this.parentComponent;
+            var editor = parentResolver.peek(this);
 
-            if (parent && typeof parent.onContentChange === 'function') {
-                parent.onContentChange();
+            if (editor && typeof editor.onContentChange === 'function') {
+                editor.onContentChange();
             }
         }
     });

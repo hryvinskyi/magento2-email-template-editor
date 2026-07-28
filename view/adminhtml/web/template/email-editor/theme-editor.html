@@ -7,5 +7,10 @@
     <button class="ete-icon-btn" data-bind="click: exportTheme" title="Export Theme"><span data-bind="i18n: 'Export'"></span></button>
     <button class="ete-icon-btn" data-bind="click: addTheme" title="Add Theme">+ <span data-bind="i18n: 'Add'"></span></button>
     <button class="ete-icon-btn ete-btn-danger-icon" data-bind="click: deleteTheme" title="Delete Theme"><span data-bind="i18n: 'Delete'"></span></button>
+    <label class="ete-toolbar-control" title="Store views this theme is available to">
+        <svg class="ete-toolbar-control-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+        <span class="ete-toolbar-control-label" data-bind="i18n: 'Scope'"></span>
+        <select class="ete-toolbar-select" data-bind="options: scopeOptions, optionsValue: 'id', optionsText: 'name', value: currentThemeScope, enable: currentThemeId() !== null"></select>
+    </label>
 </div>
 <div class="ete-codemirror-container" data-bind="afterRender: initCodeMirror"></div>

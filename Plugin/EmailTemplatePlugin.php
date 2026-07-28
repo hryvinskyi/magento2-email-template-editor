@@ -10,6 +10,7 @@ declare(strict_types=1);
 namespace Hryvinskyi\EmailTemplateEditor\Plugin;
 
 use Hryvinskyi\EmailTemplateEditor\Api\ConfigInterface;
+use Hryvinskyi\EmailTemplateEditor\Api\CssImportantPromoterInterface;
 use Hryvinskyi\EmailTemplateEditor\Api\CssInlinerInterface;
 use Hryvinskyi\EmailTemplateEditor\Api\CssLayerFlattenerInterface;
 use Hryvinskyi\EmailTemplateEditor\Api\CssVariableResolverInterface;
@@ -20,15 +21,37 @@ use Hryvinskyi\EmailTemplateEditor\Api\TemplateOverrideRepositoryInterface;
 use Hryvinskyi\EmailTemplateEditor\Api\ThemeRepositoryInterface;
 use Hryvinskyi\EmailTemplateEditor\Api\UtilityCssGeneratorInterface;
 use Magento\Email\Model\AbstractTemplate;
+use Magento\Framework\ObjectManager\ResetAfterRequestInterface;
+use Magento\Framework\Stdlib\DateTime\TimezoneInterface;
 use Magento\Store\Model\StoreManagerInterface;
 use Psr\Log\LoggerInterface;
 
-class EmailTemplatePlugin
+class EmailTemplatePlugin implements ResetAfterRequestInterface
 {
     /**
-     * @var array<string, string>
+     * Override CSS waiting to be embedded, keyed by the template object it belongs to
+     *
+     * Keyed by the object rather than by spl_object_id(): PHP recycles object handles once an
+     * object is collected, so an entry left behind by a template that was loaded but never
+     * processed could be picked up by an unrelated template and put one override's CSS onto
+     * another's markup. A WeakMap key cannot collide, and the entry disappears with the
+     * template instead of accumulating.
+     *
+     * @var \WeakMap<AbstractTemplate, string>
      */
-    private array $pendingCssMap = [];
+    private \WeakMap $pendingCssMap;
+
+    /**
+     * Overrides already resolved during this request, keyed by "templateId|storeId|themeCode"
+     *
+     * A null value is a cached "there is no override", so a template without one does not repeat
+     * the lookup on every include. The theme code belongs in the key because it decides which
+     * identifiers are searched, so the same template rendered under two themes must not share an
+     * entry.
+     *
+     * @var array<string, TemplateOverrideInterface|null>
+     */
+    private array $resolvedOverrides = [];
 
     /**
      * @param ConfigInterface $config
@@ -42,6 +65,8 @@ class EmailTemplatePlugin
      * @param EditorContextFlagInterface $editorContextFlag
      * @param CssVariableResolverInterface $cssVariableResolver
      * @param CssLayerFlattenerInterface $layerFlattener
+     * @param CssImportantPromoterInterface $importantPromoter
+     * @param TimezoneInterface $timezone
      */
     public function __construct(
         private readonly ConfigInterface $config,
@@ -54,8 +79,11 @@ class EmailTemplatePlugin
         private readonly PluginBypassFlagInterface $pluginBypassFlag,
         private readonly EditorContextFlagInterface $editorContextFlag,
         private readonly CssVariableResolverInterface $cssVariableResolver,
-        private readonly CssLayerFlattenerInterface $layerFlattener
+        private readonly CssLayerFlattenerInterface $layerFlattener,
+        private readonly CssImportantPromoterInterface $importantPromoter,
+        private readonly TimezoneInterface $timezone
     ) {
+        $this->pendingCssMap = new \WeakMap();
     }
 
     /**
@@ -155,7 +183,7 @@ class EmailTemplatePlugin
 
             $combinedCss = $this->buildCombinedCss($override, $storeId);
             if ($combinedCss !== '') {
-                $this->pendingCssMap[spl_object_id($result)] = $combinedCss;
+                $this->pendingCssMap[$result] = $combinedCss;
             }
         } catch (\Exception $e) {
             $this->logger->error(
@@ -181,14 +209,12 @@ class EmailTemplatePlugin
      */
     public function afterGetProcessedTemplate(AbstractTemplate $subject, string $result): string
     {
-        $objectId = spl_object_id($subject);
-
-        if (!isset($this->pendingCssMap[$objectId])) {
+        if (!isset($this->pendingCssMap[$subject])) {
             return $result;
         }
 
-        $css = $this->pendingCssMap[$objectId];
-        unset($this->pendingCssMap[$objectId]);
+        $css = $this->pendingCssMap[$subject];
+        unset($this->pendingCssMap[$subject]);
 
         try {
             // Flatten Tailwind `@layer` wrappers BEFORE resolving and embedding. Otherwise the
@@ -203,7 +229,13 @@ class EmailTemplatePlugin
                 return $result;
             }
 
-            return $this->embedStyleBlock($result, $resolvedCss);
+            // Whoever inlines the assembled document does so *after* Magento's own
+            // {{inlinecss}} pass has already written css/email-inline.css into `style="…"`
+            // attributes, and Emogrifier gives those pre-existing attributes the last word
+            // unless the competing declaration is !important. Without this an override class
+            // on an included header/footer (e.g. `text-black` on a link) silently loses to
+            // the stock `a { color: … }` once the fragment is pulled into a parent template.
+            return $this->embedStyleBlock($result, $this->importantPromoter->promote($resolvedCss));
         } catch (\Exception $e) {
             $this->logger->error('Failed to embed override CSS for email: ' . $e->getMessage());
 
@@ -235,6 +267,10 @@ class EmailTemplatePlugin
     /**
      * Load the best matching published override with theme and store fallback
      *
+     * Every candidate for every combination of identifier and store scope is fetched in one
+     * lookup and ranked here, because ranking the rows costs nothing next to asking the
+     * database once per rung.
+     *
      * Identifier priority: the theme-specific id ("<templateId>/<themeCode>") first, then
      * the bare id. This lets an override created against the active theme apply even when the
      * template is pulled in by its base id, e.g. a header included via
@@ -254,6 +290,14 @@ class EmailTemplatePlugin
         int $storeId,
         ?string $themeCode = null
     ): ?TemplateOverrideInterface {
+        $cacheKey = $templateId . '|' . $storeId . '|' . ($themeCode ?? '');
+
+        // array_key_exists, not isset: a resolved "no override" is stored as null and must
+        // still count as answered, or every template without one repeats the lookup.
+        if (array_key_exists($cacheKey, $this->resolvedOverrides)) {
+            return $this->resolvedOverrides[$cacheKey];
+        }
+
         $identifiers = [];
         if ($themeCode !== null && $themeCode !== '' && !str_contains($templateId, '/')) {
             $identifiers[] = $templateId . '/' . $themeCode;
@@ -265,25 +309,136 @@ class EmailTemplatePlugin
             $storeIds[] = 0;
         }
 
-        foreach ($identifiers as $identifier) {
-            foreach ($storeIds as $sid) {
-                $override = $this->overrideRepository->getActiveScheduledPublished($identifier, $sid);
-                if ($override !== null) {
-                    return $override;
-                }
-            }
-        }
+        $candidates = $this->overrideRepository->getOverridesForIdentifiers(
+            $identifiers,
+            $storeIds,
+            [TemplateOverrideInterface::STATUS_PUBLISHED]
+        );
 
-        foreach ($identifiers as $identifier) {
-            foreach ($storeIds as $sid) {
-                $override = $this->overrideRepository->getImmediatePublished($identifier, $sid);
-                if ($override !== null) {
-                    return $override;
+        $override = $this->pickHighestPriority($candidates, $identifiers, $storeIds);
+        $this->resolvedOverrides[$cacheKey] = $override;
+
+        return $override;
+    }
+
+    /**
+     * Rank the fetched candidates and return the winner
+     *
+     * The schedule window is the outermost dimension, so a candidate whose window is open right
+     * now outranks every immediate one regardless of identifier or store — a bare, default-scope
+     * scheduled override beats a themed, store-specific immediate one. Identifier comes next,
+     * store last.
+     *
+     * @param array<string, TemplateOverrideInterface[]> $candidates Rows grouped by identifier
+     * @param string[] $identifiers Identifiers in descending priority
+     * @param int[] $storeIds Store scopes in descending priority
+     * @return TemplateOverrideInterface|null
+     */
+    private function pickHighestPriority(
+        array $candidates,
+        array $identifiers,
+        array $storeIds
+    ): ?TemplateOverrideInterface {
+        $now = $this->timezone->date()->format('Y-m-d H:i:s');
+
+        $windows = [
+            fn (TemplateOverrideInterface $o): bool => $this->isWithinActiveSchedule($o, $now),
+            fn (TemplateOverrideInterface $o): bool => $this->hasNoSchedule($o),
+        ];
+
+        foreach ($windows as $matchesWindow) {
+            foreach ($identifiers as $identifier) {
+                foreach ($storeIds as $scopeId) {
+                    $winner = $this->lowestIdMatching($candidates[$identifier] ?? [], $scopeId, $matchesWindow);
+
+                    if ($winner !== null) {
+                        return $winner;
+                    }
                 }
             }
         }
 
         return null;
+    }
+
+    /**
+     * Pick the lowest-id row of one scope that satisfies a window test
+     *
+     * Ascending entity id is the tie-break because that is the order the single-row queries this
+     * replaced happened to receive rows in, and one of several equally ranked overrides has
+     * always been chosen that way.
+     *
+     * @param TemplateOverrideInterface[] $candidates
+     * @param int $storeId
+     * @param callable(TemplateOverrideInterface): bool $matchesWindow
+     * @return TemplateOverrideInterface|null
+     */
+    private function lowestIdMatching(
+        array $candidates,
+        int $storeId,
+        callable $matchesWindow
+    ): ?TemplateOverrideInterface {
+        $winner = null;
+
+        foreach ($candidates as $candidate) {
+            if ($candidate->getStoreId() !== $storeId || !$matchesWindow($candidate)) {
+                continue;
+            }
+
+            if ($winner === null || (int)$candidate->getEntityId() < (int)$winner->getEntityId()) {
+                $winner = $candidate;
+            }
+        }
+
+        return $winner;
+    }
+
+    /**
+     * Whether a scheduled override's window is open at the given moment
+     *
+     * Both bounds must be set. An override carrying only one of them satisfies neither this test
+     * nor hasNoSchedule() and is therefore never applied — a NULL bound fails the comparison in
+     * SQL too, so this keeps a long-standing blind spot exactly as it is rather than quietly
+     * starting to apply half-open windows. The explicit null checks are what hold that line:
+     * comparing a null bound directly would cast it to an empty string and read as "always open".
+     *
+     * is_active is required here, and deliberately not required by hasNoSchedule().
+     *
+     * @param TemplateOverrideInterface $override
+     * @param string $now Current time in the store's timezone, formatted Y-m-d H:i:s
+     * @return bool
+     */
+    private function isWithinActiveSchedule(TemplateOverrideInterface $override, string $now): bool
+    {
+        if (!$override->getIsActive()) {
+            return false;
+        }
+
+        $activeFrom = $override->getActiveFrom();
+        $activeTo = $override->getActiveTo();
+
+        if ($activeFrom === null || $activeTo === null) {
+            return false;
+        }
+
+        // Zero-padded Y-m-d H:i:s sorts lexicographically in chronological order.
+        return $activeFrom <= $now && $activeTo >= $now;
+    }
+
+    /**
+     * Whether an override applies immediately, i.e. carries no schedule at all
+     *
+     * is_active is deliberately not tested. An inactive undated override still wins its rung and
+     * then stops the overlay in applyOverlay(), which is what suppresses any lower-ranked
+     * override standing behind it; testing it here would start applying overlays that are
+     * suppressed today.
+     *
+     * @param TemplateOverrideInterface $override
+     * @return bool
+     */
+    private function hasNoSchedule(TemplateOverrideInterface $override): bool
+    {
+        return $override->getActiveFrom() === null && $override->getActiveTo() === null;
     }
 
     /**
@@ -299,6 +454,14 @@ class EmailTemplatePlugin
 
             return is_string($theme) && $theme !== '' ? $theme : null;
         } catch (\Exception $e) {
+            // Falling back to the bare identifier is the right behaviour, but it drops every
+            // theme-specific rung of the lookup, so an override created against the admin's
+            // theme just stops applying. Without this line nothing anywhere records why.
+            $this->logger->warning(
+                'EmailTemplateEditor could not resolve the design theme code; theme-specific '
+                . 'overrides will not be considered: ' . $e->getMessage()
+            );
+
             return null;
         }
     }
@@ -343,5 +506,20 @@ class EmailTemplatePlugin
         }
 
         return implode("\n", $parts);
+    }
+
+    /**
+     * @inheritDoc
+     *
+     * Both maps are per-request state on a shared singleton. The order-email cron sends a whole
+     * batch of messages in one PHP process, each loading its template through this plugin, so
+     * without this the resolved overrides of the first message would be reused for every
+     * following one and any CSS left pending by a template that was never processed would
+     * outlive the send it belonged to.
+     */
+    public function _resetState(): void
+    {
+        $this->pendingCssMap = new \WeakMap();
+        $this->resolvedOverrides = [];
     }
 }

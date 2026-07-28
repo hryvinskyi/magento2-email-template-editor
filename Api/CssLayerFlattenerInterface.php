@@ -24,7 +24,9 @@ interface CssLayerFlattenerInterface
      *
      * - `@layer base { … }` is dropped entirely (preflight resets would shred email layouts).
      * - `@layer properties { … }` is dropped entirely (Tailwind variable initialisation).
-     * - Standalone `@property … { … }` rules are dropped.
+     * - Standalone `@property … { … }` rules are dropped, but any `initial-value` they
+     *   register is hoisted into a leading `:root { … }` block so `var()` references to
+     *   those slots (e.g. `border-style: var(--tw-border-style)`) stay resolvable.
      * - Every other `@layer X { rules }` is unwrapped so the inner rules become top-level.
      *
      * @param string $css

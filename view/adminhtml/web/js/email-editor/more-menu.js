@@ -18,6 +18,9 @@ define([
             hasDraft: false
         },
 
+        /** @type {Function|null} The document handler as it was actually registered. */
+        _documentClickHandler: null,
+
         /**
          * @inheritDoc
          */
@@ -25,7 +28,12 @@ define([
             this._super();
             this.observe(['isOpen', 'hasDraft']);
 
-            $(document).on('click', this._onDocumentClick.bind(this));
+            // jQuery removes a handler by identity, and .bind() returns a different
+            // function every time it is called - so the registered one has to be kept.
+            // Without it the teardown below matches nothing, the document keeps calling
+            // into a component that is gone, and that component can never be collected.
+            this._documentClickHandler = this._onDocumentClick.bind(this);
+            $(document).on('click', this._documentClickHandler);
 
             return this;
         },
@@ -92,7 +100,11 @@ define([
          * @inheritDoc
          */
         destroy: function () {
-            $(document).off('click', this._onDocumentClick);
+            if (this._documentClickHandler) {
+                $(document).off('click', this._documentClickHandler);
+                this._documentClickHandler = null;
+            }
+
             this._super();
         }
     });

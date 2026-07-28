@@ -24,6 +24,15 @@ use Psr\Log\LoggerInterface;
 class SpecificOrderProvider implements SampleDataProviderInterface
 {
     /**
+     * Shortest query the search will run; anything shorter is answered with an empty result
+     *
+     * A one-character term matches most of the orders table and is the most expensive thing this
+     * search can be asked for, so it is refused before a collection is even created. The admin UI
+     * enforces the same minimum before it sends the request.
+     */
+    private const MIN_QUERY_LENGTH = 2;
+
+    /**
      * @param OrderCollectionFactory $orderCollectionFactory
      * @param OrderRepositoryInterface $orderRepository
      * @param StoreManagerInterface $storeManager
@@ -74,9 +83,17 @@ class SpecificOrderProvider implements SampleDataProviderInterface
      */
     public function searchEntities(string $query, int $storeId, int $limit = 10): array
     {
+        $query = trim($query);
+
+        if (mb_strlen($query) < self::MIN_QUERY_LENGTH) {
+            return [];
+        }
+
         $results = [];
 
         try {
+            $term = $this->escapeLikeWildcards($query);
+
             $collection = $this->orderCollectionFactory->create();
             $collection->addFieldToSelect(['entity_id', 'increment_id', 'customer_firstname', 'customer_lastname', 'customer_email', 'grand_total', 'order_currency_code']);
 
@@ -84,15 +101,24 @@ class SpecificOrderProvider implements SampleDataProviderInterface
                 $collection->addFieldToFilter('store_id', $storeId);
             }
 
-            $collection->addFieldToFilter(
-                ['increment_id', 'customer_email', 'customer_firstname', 'customer_lastname'],
-                [
-                    ['like' => '%' . $query . '%'],
-                    ['like' => '%' . $query . '%'],
-                    ['like' => '%' . $query . '%'],
-                    ['like' => '%' . $query . '%'],
-                ]
-            );
+            if ($this->isOrderNumberQuery($query)) {
+                // A single trailing-wildcard condition on increment_id is a range scan on the
+                // (increment_id, store_id) unique key. OR-ing anything else in here would put a
+                // leading-wildcard branch back into the statement and force a scan of the table.
+                $collection->addFieldToFilter('increment_id', ['like' => $term . '%']);
+            } else {
+                // No index covers these columns on sales_order, so this branch stays a scan of
+                // the primary key walked backwards; the ordering and page size below are what
+                // bound it.
+                $collection->addFieldToFilter(
+                    ['customer_email', 'customer_firstname', 'customer_lastname'],
+                    [
+                        ['like' => '%' . $term . '%'],
+                        ['like' => '%' . $term . '%'],
+                        ['like' => '%' . $term . '%'],
+                    ]
+                );
+            }
 
             $collection->setOrder('entity_id', 'DESC');
             $collection->setPageSize($limit);
@@ -115,6 +141,36 @@ class SpecificOrderProvider implements SampleDataProviderInterface
         }
 
         return $results;
+    }
+
+    /**
+     * Check whether the query is shaped like an order number rather than free text
+     *
+     * Order increment ids are a sequence prefix followed by a zero-padded counter, and the prefix
+     * Magento assigns is the numeric store id, so an order number is digits with at most a
+     * separator between them. Requiring a leading digit and nothing but digits and separators
+     * keeps names, e-mail addresses and anything else containing a letter out of this branch.
+     *
+     * @param string $query
+     * @return bool
+     */
+    private function isOrderNumberQuery(string $query): bool
+    {
+        return preg_match('/^\d[\d\-\/]*$/', $query) === 1;
+    }
+
+    /**
+     * Neutralise LIKE wildcards the user typed as ordinary characters
+     *
+     * A query of "%" would otherwise match every row. The value is still bound and quoted by the
+     * adapter, so this is about the pattern the user asked for, not about injection.
+     *
+     * @param string $query
+     * @return string
+     */
+    private function escapeLikeWildcards(string $query): string
+    {
+        return addcslashes($query, '\\%_');
     }
 
     /**

@@ -61,6 +61,22 @@
                     <span class="ete-variable-label" data-bind="text: label"></span>
                     <!-- /ko -->
                     <span class="ete-variable-insert-hint" data-bind="i18n: 'Click to insert'"></span>
+                    <!-- Explaining a variable is not inserting it, so the press must not reach the
+                         row underneath. A row remembered before rows carried references has none,
+                         and then there is nothing to explain. The test is written against $data
+                         because a binding expression is evaluated in the row's own scope, where a
+                         property the row does not carry is an unresolved name and throws rather
+                         than reading as absent — and rows persisted by an earlier version of this
+                         panel are exactly that case. -->
+                    <!-- ko if: $data.reference -->
+                    <button type="button"
+                            class="ete-variable-info"
+                            data-bind="click: $parent.onVariableInfoClick.bind($parent, $data),
+                                       clickBubble: false,
+                                       attr: {title: $t('What is this variable?')}">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+                    </button>
+                    <!-- /ko -->
                 </div>
             </div>
         </div>
@@ -81,6 +97,19 @@
                     <span class="ete-variable-label" data-bind="text: label"></span>
                     <!-- /ko -->
                     <span class="ete-variable-insert-hint" data-bind="i18n: 'Click to insert'"></span>
+                    <!-- A row whose directive the server would not name carries no reference, and
+                         then nothing is offered rather than an explanation of the wrong thing.
+                         Tested through $data so an older response shape reads as absent instead of
+                         throwing an unresolved name. -->
+                    <!-- ko if: $data.reference -->
+                    <button type="button"
+                            class="ete-variable-info"
+                            data-bind="click: $parents[1].onVariableInfoClick.bind($parents[1], $data),
+                                       clickBubble: false,
+                                       attr: {title: $t('What is this variable?')}">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+                    </button>
+                    <!-- /ko -->
                 </div>
             </div>
         </div>

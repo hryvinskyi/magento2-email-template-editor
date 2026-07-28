@@ -6,12 +6,39 @@
  * GitHub: https://github.com/hryvinskyi
  */
 -->
+<!--
+    Every host here is loaded by one of the editor's two offscreen iframes, both of which
+    inherit the admin page's policy.
+
+    A missing entry does not fail loudly. The compiler iframe's inline bootstrap flips
+    `_twReady` whether or not the bundle actually executed, so a blocked script still looks
+    like a successful compile - it just yields empty CSS after burning its full retry budget,
+    and that empty result is what gets persisted as the draft's `tailwind_css`.
+-->
 <csp_whitelist xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
                xsi:noNamespaceSchemaLocation="urn:magento:module:Magento_Csp:etc/csp_whitelist.xsd">
     <policies>
+        <!-- The Tailwind v4 browser bundle, loaded by view/adminhtml/web/js/email-editor/tailwind-compiler.js -->
         <policy id="script-src">
             <values>
-                <value id="cdn_tailwindcss" type="host">cdn.tailwindcss.com</value>
+                <value id="cdn_jsdelivr" type="host">cdn.jsdelivr.net</value>
+            </values>
+        </policy>
+        <!--
+            Themes may pull webfonts: UtilityCssGenerator emits an `@import` for every
+            `googleFonts` entry of a legacy theme, and ThemeJsonValidator accepts a
+            hand-written one. The `@import` itself is governed by style-src; the font files it
+            then requests are governed by font-src, so both are needed for the preview to
+            render in the intended typeface.
+        -->
+        <policy id="style-src">
+            <values>
+                <value id="fonts_googleapis" type="host">fonts.googleapis.com</value>
+            </values>
+        </policy>
+        <policy id="font-src">
+            <values>
+                <value id="fonts_gstatic" type="host">fonts.gstatic.com</value>
             </values>
         </policy>
     </policies>

@@ -7,8 +7,11 @@
 define([
     'uiComponent',
     'ko',
-    'jquery'
-], function (Component, ko, $) {
+    'jquery',
+    'mage/translate',
+    'Hryvinskyi_EmailTemplateEditor/js/email-editor/parent-resolver',
+    'Hryvinskyi_EmailTemplateEditor/js/email-editor/failure-reporter'
+], function (Component, ko, $, $t, parentResolver, failureReporter) {
     'use strict';
 
     return Component.extend({
@@ -17,6 +20,20 @@ define([
             urls: window.emailEditorConfig && window.emailEditorConfig.urls || {},
             formKey: window.emailEditorConfig && window.emailEditorConfig.formKey || ''
         },
+
+        /**
+         * Monotonic generation of template-list requests.
+         *
+         * A response may only be applied if it is still the newest request of its kind:
+         * the tree belongs to the store view that is selected now, not to whichever
+         * response happens to come back last.
+         *
+         * @type {number}
+         */
+        _listToken: 0,
+
+        /** @type {jQuery.jqXHR|null} The template-list request currently on the wire. */
+        _listXhr: null,
 
         /**
          * Initialize component, set up observables and computed properties.
@@ -264,18 +281,64 @@ define([
         /**
          * Load template list from the server and populate groups.
          *
+         * The returned promise settles for the request that actually owns the tree, so
+         * a caller may restore its own state in `.done()` without checking whether its
+         * load was overtaken; a load that loses the race simply never resolves it.
+         *
          * @param {number} [storeId] Store view scope; remembered for subsequent refreshes.
-         * @return {jQuery.Deferred}
+         * @return {jQuery.Promise} Resolved with the response that populated the tree.
          */
         load: function (storeId) {
-            var self = this;
+            var deferred = $.Deferred();
 
             if (storeId !== undefined) {
                 this.currentStoreId(parseInt(storeId, 10) || 0);
             }
 
-            return this._ajax(this.urls.loadList, 'GET', {store_id: this.currentStoreId()}).done(function (res) {
-                if (res.success && res.templates) {
+            // Claim the newest generation before cancelling, so the request being
+            // dropped here can recognise that a newer tree took its place - and not
+            // mistake itself for a tree that was cancelled for some unrelated reason.
+            this._listToken++;
+
+            if (this._listXhr && this._listXhr.readyState !== 4) {
+                this._listXhr.abort();
+            }
+
+            this._requestList(this._listToken, deferred, true);
+
+            return deferred.promise();
+        },
+
+        /**
+         * Fire one template-list request for the store view currently on screen.
+         *
+         * @param {number} token - Generation this request belongs to.
+         * @param {jQuery.Deferred} deferred - Settled once this generation is decided.
+         * @param {boolean} mayReissue - Whether a cancellation may be answered by asking again.
+         * @return {void}
+         * @private
+         */
+        _requestList: function (token, deferred, mayReissue) {
+            var self = this;
+
+            this._listXhr = this._ajax(this.urls.loadList, 'GET', {store_id: this.currentStoreId()})
+                .done(function (res) {
+                    if (token !== self._listToken) {
+                        deferred.reject();
+
+                        return;
+                    }
+
+                    if (!res.success || !res.templates) {
+                        failureReporter.report(
+                            self,
+                            res.message || $t('The template list could not be loaded.')
+                        );
+                        deferred.reject(res);
+
+                        return;
+                    }
+
                     var grouped = [];
 
                     $.each(res.templates, function (groupKey, templates) {
@@ -287,8 +350,37 @@ define([
                     });
 
                     self.groups(grouped);
-                }
-            });
+                    deferred.resolve(res);
+                })
+                .fail(function (xhr, textStatus) {
+                    if (token !== self._listToken) {
+                        deferred.reject();
+
+                        return;
+                    }
+
+                    if (failureReporter.isAbort(textStatus)) {
+                        // Cancelled while still the newest request, so it was not
+                        // superseded by another tree - opening a template cancels
+                        // everything outstanding, and the store view on screen would be
+                        // left with no tree at all. Ask once more; a second cancellation
+                        // is accepted so this can never chase itself.
+                        if (mayReissue) {
+                            self._requestList(token, deferred, false);
+                        } else {
+                            deferred.reject();
+                        }
+
+                        return;
+                    }
+
+                    failureReporter.report(
+                        self,
+                        $t('The template list could not be loaded. Please try again.'),
+                        textStatus
+                    );
+                    deferred.reject();
+                });
         },
 
         /**
@@ -458,7 +550,7 @@ define([
          * Reload the sidebar data from the server while preserving
          * the currently expanded groups, templates, and active selection.
          *
-         * @return {jQuery.Deferred}
+         * @return {jQuery.Promise}
          */
         refresh: function () {
             var self = this,
@@ -487,13 +579,66 @@ define([
         },
 
         /**
-         * Mark a template as having or not having a draft.
+         * Reflect that a template does or does not have a working draft.
+         *
+         * This runs after every draft save, the two-second autosave included, so it must
+         * not go to the server for something that is already on screen. Saving an
+         * existing draft over and over changes no row in the tree; only gaining a first
+         * draft or losing the last one adds or removes one, and only that is worth a
+         * reload. A template the tree has never heard of is reloaded too, because there
+         * is nothing to compare against.
          *
          * @param {string} identifier
          * @param {boolean} hasDraft
+         * @return {void}
          */
         markDraft: function (identifier, hasDraft) {
+            var template = this._findTemplate(identifier);
+
+            if (template && this._hasDraft(template) === !!hasDraft) {
+                return;
+            }
+
             this.refresh();
+        },
+
+        /**
+         * Find a template node in the loaded tree by its identifier.
+         *
+         * @param {string} identifier
+         * @return {Object|null}
+         * @private
+         */
+        _findTemplate: function (identifier) {
+            var groups = this.groups(),
+                i, j;
+
+            for (i = 0; i < groups.length; i++) {
+                for (j = 0; j < groups[i].templates.length; j++) {
+                    if (groups[i].templates[j].id === identifier) {
+                        return groups[i].templates[j];
+                    }
+                }
+            }
+
+            return null;
+        },
+
+        /**
+         * Whether the loaded tree already carries a draft for a template.
+         *
+         * The server scopes the list it returns to the selected store view and its
+         * fallback, so any draft present here is one the tree already knows about for
+         * the scope on screen. Legacy entries are not drafts and never count.
+         *
+         * @param {Object} tpl
+         * @return {boolean}
+         * @private
+         */
+        _hasDraft: function (tpl) {
+            return (tpl.overrides || []).some(function (override) {
+                return override.source !== 'legacy' && override.status === 'draft';
+            });
         },
 
         /**
@@ -512,8 +657,20 @@ define([
             this._ajax(this.urls.renameDraft, 'POST', {
                 entity_id: overrideData.entity_id,
                 draft_name: newName
-            }).done(function () {
+            }).done(function (res) {
+                if (res && res.success === false) {
+                    failureReporter.report(self, res.message || $t('The override could not be renamed.'));
+
+                    return;
+                }
+
                 self.refresh();
+            }).fail(function (xhr, textStatus) {
+                failureReporter.report(
+                    self,
+                    $t('The override could not be renamed. Please try again.'),
+                    textStatus
+                );
             });
         },
 
@@ -534,12 +691,27 @@ define([
                 onConfirm: function () {
                     self._ajax(self.urls.deleteDraft, 'POST', {
                         entity_id: overrideData.entity_id
-                    }).done(function () {
+                    }).done(function (res) {
+                        if (res && res.success === false) {
+                            failureReporter.report(
+                                self,
+                                res.message || $t('The override could not be deleted.')
+                            );
+
+                            return;
+                        }
+
                         if (self.activeOverrideId() === overrideData.entity_id) {
                             self.activeOverrideId(null);
                         }
 
                         self.refresh();
+                    }).fail(function (xhr, textStatus) {
+                        failureReporter.report(
+                            self,
+                            $t('The override could not be deleted. Please try again.'),
+                            textStatus
+                        );
                     });
                 }
             });
@@ -556,9 +728,22 @@ define([
             this._ajax(this.urls.toggleActive, 'POST', {
                 entity_id: overrideData.entity_id
             }).done(function (res) {
-                if (res.success) {
-                    self.refresh();
+                if (!res.success) {
+                    failureReporter.report(
+                        self,
+                        res.message || $t('The override could not be switched on or off.')
+                    );
+
+                    return;
                 }
+
+                self.refresh();
+            }).fail(function (xhr, textStatus) {
+                failureReporter.report(
+                    self,
+                    $t('The override could not be switched on or off. Please try again.'),
+                    textStatus
+                );
             });
         },
 
@@ -642,20 +827,34 @@ define([
         /**
          * Perform an AJAX request with form_key injection.
          *
+         * The request is handed to the editor so that it counts towards the one busy
+         * state the whole screen shares and can be reached by its cancellation sweep.
+         * The jqXHR itself is what comes back, synchronously, so every caller keeps
+         * chaining .done/.fail on the request exactly as before. While the editor is
+         * not registered yet the request simply goes out untracked - invisible is far
+         * better than not sent at all, and that window closes during page load.
+         *
          * @param {string} url
          * @param {string} method
          * @param {Object} data
-         * @return {jQuery.Deferred}
+         * @return {jQuery.jqXHR}
          */
         _ajax: function (url, method, data) {
+            var editor = parentResolver.peek(this),
+                xhr;
+
             data.form_key = this.formKey;
 
-            return $.ajax({
+            xhr = $.ajax({
                 url: url,
                 type: method,
                 data: data,
                 dataType: 'json'
             });
+
+            return editor && typeof editor.trackRequest === 'function'
+                ? editor.trackRequest(xhr)
+                : xhr;
         }
     });
 });

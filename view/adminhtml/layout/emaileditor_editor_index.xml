@@ -62,6 +62,10 @@
                                 <item name="component" xsi:type="string">Hryvinskyi_EmailTemplateEditor/js/email-editor/variable-chooser</item>
                                 <item name="displayArea" xsi:type="string">variableChooser</item>
                             </item>
+                            <item name="variableInspector" xsi:type="array">
+                                <item name="component" xsi:type="string">Hryvinskyi_EmailTemplateEditor/js/email-editor/knowledge/variable-inspector</item>
+                                <item name="displayArea" xsi:type="string">variableInspector</item>
+                            </item>
                             <item name="draftManager" xsi:type="array">
                                 <item name="component" xsi:type="string">Hryvinskyi_EmailTemplateEditor/js/email-editor/draft-manager</item>
                                 <item name="displayArea" xsi:type="string">draftManager</item>
