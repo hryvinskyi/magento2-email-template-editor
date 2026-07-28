@@ -9,6 +9,8 @@ declare(strict_types=1);
 
 namespace Hryvinskyi\EmailTemplateEditor\Test\Unit\Model;
 
+use Hryvinskyi\EmailTemplateEditor\Model\Css\CssStructureParser;
+use Hryvinskyi\EmailTemplateEditor\Model\Css\CssSyntaxScanner;
 use Hryvinskyi\EmailTemplateEditor\Model\CssImportantPromoter;
 use PHPUnit\Framework\TestCase;
 
@@ -18,7 +20,7 @@ class CssImportantPromoterTest extends TestCase
 
     protected function setUp(): void
     {
-        $this->promoter = new CssImportantPromoter();
+        $this->promoter = new CssImportantPromoter(new CssStructureParser(new CssSyntaxScanner()));
     }
 
     public function testEveryDeclarationOfAStyleRuleIsPromoted(): void

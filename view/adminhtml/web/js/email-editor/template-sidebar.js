@@ -685,7 +685,7 @@ define([
             this.trigger('confirmAction', {
                 title: $.mage.__('Delete Override'),
                 message: $.mage.__('Are you sure you want to delete this override? This action cannot be undone.'),
-                detail: '<strong>' + (overrideData.label || '') + '</strong> (' + overrideData.status + ')',
+                detail: (overrideData.label || '') + ' (' + overrideData.status + ')',
                 actionLabel: $.mage.__('Delete'),
                 type: 'danger',
                 onConfirm: function () {

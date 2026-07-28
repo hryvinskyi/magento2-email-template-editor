@@ -46,6 +46,7 @@ define([
     'Hryvinskyi_EmailTemplateEditor/js/email-editor/parent-resolver',
     'Hryvinskyi_EmailTemplateEditor/js/email-editor/failure-reporter',
     'Hryvinskyi_EmailTemplateEditor/js/email-editor/knowledge/modifier-chain',
+    'Hryvinskyi_EmailTemplateEditor/js/email-editor/knowledge/modifier-rows',
     'Hryvinskyi_EmailTemplateEditor/js/email-editor/knowledge/entry-cache',
     'Hryvinskyi_EmailTemplateEditor/js/email-editor/knowledge/inspector-placement'
 ], function (
@@ -57,6 +58,7 @@ define([
     parentResolver,
     failureReporter,
     modifierChain,
+    modifierRows,
     entryCache,
     placement
 ) {
@@ -205,21 +207,7 @@ define([
              * ticked, which reads as the panel jumping away from what was just pressed.
              */
             this.modifierRows = ko.computed(function () {
-                return (self.modifierDescriptors() || []).map(function (descriptor) {
-                    var spec = (descriptor.arguments || [])[0] || null,
-                        fallback = spec && typeof spec['default'] === 'string' ? spec['default'] : '';
-
-                    return {
-                        name: descriptor.name,
-                        label: descriptor.label || descriptor.name,
-                        description: descriptor.description || '',
-                        implemented: descriptor.implemented !== false,
-                        options: spec && spec.options ? spec.options : [],
-                        defaultArgument: fallback,
-                        applied: ko.observable(false),
-                        argument: ko.observable(fallback)
-                    };
-                });
+                return modifierRows.build(self.modifierDescriptors(), ko.observable);
             });
 
             /*

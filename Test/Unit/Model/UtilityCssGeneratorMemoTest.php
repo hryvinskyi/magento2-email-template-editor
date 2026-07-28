@@ -9,6 +9,8 @@ declare(strict_types=1);
 
 namespace Hryvinskyi\EmailTemplateEditor\Test\Unit\Model;
 
+use Hryvinskyi\EmailTemplateEditor\Model\Css\CssStructureParser;
+use Hryvinskyi\EmailTemplateEditor\Model\Css\CssSyntaxScanner;
 use Hryvinskyi\EmailTemplateEditor\Model\UtilityCssGenerator;
 use PHPUnit\Framework\TestCase;
 
@@ -32,7 +34,7 @@ class UtilityCssGeneratorMemoTest extends TestCase
 
     protected function setUp(): void
     {
-        $this->generator = new UtilityCssGenerator();
+        $this->generator = new UtilityCssGenerator(new CssStructureParser(new CssSyntaxScanner()), new CssSyntaxScanner());
     }
 
     public function testASeededEntryIsReturnedInsteadOfBeingRecomputed(): void
@@ -84,7 +86,7 @@ class UtilityCssGeneratorMemoTest extends TestCase
         self::assertSame($first, $second);
         self::assertSame(
             $first,
-            (new UtilityCssGenerator())->generate(self::THEME),
+            (new UtilityCssGenerator(new CssStructureParser(new CssSyntaxScanner()), new CssSyntaxScanner()))->generate(self::THEME),
             'The memo may only change the cost of a call, never its output.'
         );
     }

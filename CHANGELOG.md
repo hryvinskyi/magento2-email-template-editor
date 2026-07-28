@@ -5,6 +5,55 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-07-28
+
+Five defects that each gave a recipient something other than what the administrator saw, and none of
+which announced itself. Plus the module's first coverage for the browser code.
+
+### Fixed
+- **A published override carrying only one date reached nobody.** The send path required *both*
+  `active_from` and `active_to` to be set, while the row that carries neither is handled by a
+  separate branch — so a row with exactly one date fell between them and the stock template was sent
+  instead. The publish dialog asks for "at least one date", so this was ordinary, not exotic. An
+  unset bound is now an open end on that side, both bounds inclusive, and the rule is pinned by the
+  same twelve window shapes on both sides of it — send-time resolution and the repository lookups —
+  because the rule living in two implementations is what let it survive.
+- **Switching an override off did not fall back to the next one.** A switched-off override still won
+  its rung and then declined to fill it, so turning off a store-view override sent the stock template
+  rather than the All Store Views one. Switching off now means the override is not there. One gate
+  decides it, applied before any window is considered; the publisher separately keeps the undated
+  slot to a single row, asking about occupancy through a lookup of its own rather than through the
+  one that answers about liveness.
+- **A stored cross-site-scripting hole in the confirmation dialog.** The detail line was rendered as
+  markup while three call sites concatenated a draft name and a version comment into it — both free
+  text. Publishing with a script tag in the comment and then opening Delete on that row ran it. The
+  value is now text and the emphasis is the stylesheet's; a test carries the two remaining markup
+  bindings with the reason each is safe, so a third has to be argued for.
+- **Custom properties resolved from the whole document rather than from their own rule.** One
+  `.border-dashed` made every `border-*` utility dashed, a `prefers-color-scheme: dark` override
+  leaked into every message, a `;` inside a `data:` URI truncated the declaration, and a brace inside
+  a string stopped anything being inlined at all. The resolver is now a scope-aware tokenizer sharing
+  its primitives with the `!important` promoter, and one invalid UTF-8 byte no longer turns the whole
+  stylesheet into an empty string.
+- **The editor was unreachable for roles that could use it, and hijacked the screen from roles that
+  could not.** The redirect out of Magento's own template screen now happens only when the role holds
+  the destination's own permission, the row exists, its code names a template the editor has, and the
+  module is switched on somewhere — it is per store view, so asking only the default scope hid the
+  editor from a merchant who enabled it for one store.
+- **A theme token holding a `data:` URI shipped a broken value.** Both the token reader and the
+  injection guard split on every semicolon; they now know that one inside a string or parentheses is
+  part of the value, while one that would escape the declaration is still removed.
+- **The `config` cache is invalidated even when a field's own after-save step fails**, and such a
+  failure is reported as a completed write with a warning rather than as a refusal of a change that
+  already happened.
+
+### Added
+- **The module's first coverage for its browser code** — 201 tests over a DOM stub written for the
+  purpose, with no npm dependencies and no `package.json`. It covers request generations, the cache
+  and its store-view invalidation, the modifier-toggle decision, the decorator against a fake editor,
+  and the structural checks that catch a binding on a bare property name or a component registered in
+  two of the three places it needs to be.
+
 ## [1.2.0] - 2026-07-28
 
 Contains the changes listed under 1.1.3, which was written but never tagged.

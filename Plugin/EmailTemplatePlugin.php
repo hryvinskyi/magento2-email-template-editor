@@ -169,9 +169,13 @@ class EmailTemplatePlugin implements ResetAfterRequestInterface
                 return;
             }
 
+            // No second look at whether the override is switched on: the ranking passes over
+            // switched-off rows outright, so anything it hands back is one that applies. Testing
+            // it again here is what used to let a switched-off row win its rung and then stop the
+            // overlay, taking every lower-ranked override down with it.
             $override = $this->loadPublishedOverride($templateId, $storeId, $this->resolveThemeCode($result));
 
-            if ($override === null || !$override->getIsActive()) {
+            if ($override === null) {
                 return;
             }
 
@@ -277,8 +281,9 @@ class EmailTemplatePlugin implements ResetAfterRequestInterface
      * {{template config_path="design/email/header_template"}} on a themed store view.
      *
      * Store priority: the specific store first, then the default scope (0 = all store views).
-     * Status priority: an active scheduled override (active_from/active_to covers now) first,
-     * then an immediate override (no date range).
+     * Window priority: an active override whose availability window is open now first — a window
+     * left open at one end counts, from or until the bound it does carry — then an override that
+     * carries no window at all.
      *
      * @param string $templateId
      * @param int $storeId
@@ -324,10 +329,10 @@ class EmailTemplatePlugin implements ResetAfterRequestInterface
     /**
      * Rank the fetched candidates and return the winner
      *
-     * The schedule window is the outermost dimension, so a candidate whose window is open right
-     * now outranks every immediate one regardless of identifier or store — a bare, default-scope
-     * scheduled override beats a themed, store-specific immediate one. Identifier comes next,
-     * store last.
+     * The availability window is the outermost dimension, so a candidate whose window is open
+     * right now outranks every undated one regardless of identifier or store — a bare,
+     * default-scope windowed override beats a themed, store-specific undated one. Identifier comes
+     * next, store last.
      *
      * @param array<string, TemplateOverrideInterface[]> $candidates Rows grouped by identifier
      * @param string[] $identifiers Identifiers in descending priority
@@ -342,8 +347,8 @@ class EmailTemplatePlugin implements ResetAfterRequestInterface
         $now = $this->timezone->date()->format('Y-m-d H:i:s');
 
         $windows = [
-            fn (TemplateOverrideInterface $o): bool => $this->isWithinActiveSchedule($o, $now),
-            fn (TemplateOverrideInterface $o): bool => $this->hasNoSchedule($o),
+            fn (TemplateOverrideInterface $o): bool => $this->isWithinOpenWindow($o, $now),
+            fn (TemplateOverrideInterface $o): bool => $this->carriesNoWindow($o),
         ];
 
         foreach ($windows as $matchesWindow) {
@@ -364,6 +369,13 @@ class EmailTemplatePlugin implements ResetAfterRequestInterface
     /**
      * Pick the lowest-id row of one scope that satisfies a window test
      *
+     * The single place where a switched-off override is passed over, for every rung of the ladder.
+     * Switching an override off means it is not there, so it must not win a rung it cannot then
+     * fill: a row that wins and is then discarded further down suppresses the override standing
+     * behind it, and an admin who switches off a store-view override gets stock templates instead
+     * of the All Store Views one they were expecting to fall back to. Testing it here rather than
+     * in each window predicate is what keeps the two rungs from drifting apart on the point.
+     *
      * Ascending entity id is the tie-break because that is the order the single-row queries this
      * replaced happened to receive rows in, and one of several equally ranked overrides has
      * always been chosen that way.
@@ -381,7 +393,10 @@ class EmailTemplatePlugin implements ResetAfterRequestInterface
         $winner = null;
 
         foreach ($candidates as $candidate) {
-            if ($candidate->getStoreId() !== $storeId || !$matchesWindow($candidate)) {
+            if (!$candidate->getIsActive()
+                || $candidate->getStoreId() !== $storeId
+                || !$matchesWindow($candidate)
+            ) {
                 continue;
             }
 
@@ -394,49 +409,56 @@ class EmailTemplatePlugin implements ResetAfterRequestInterface
     }
 
     /**
-     * Whether a scheduled override's window is open at the given moment
+     * Whether an override's availability window is open at the given moment
      *
-     * Both bounds must be set. An override carrying only one of them satisfies neither this test
-     * nor hasNoSchedule() and is therefore never applied — a NULL bound fails the comparison in
-     * SQL too, so this keeps a long-standing blind spot exactly as it is rather than quietly
-     * starting to apply half-open windows. The explicit null checks are what hold that line:
-     * comparing a null bound directly would cast it to an empty string and read as "always open".
+     * Each bound is optional and a bound that is not set is an open end rather than a missing
+     * window: a row carrying only active_from applies from that moment onward, one carrying only
+     * active_to applies until it, and one carrying both applies between them, both bounds
+     * included. The publish dialog asks for at least one date and not for both, so half-open rows
+     * are ordinary rows rather than malformed ones.
      *
-     * is_active is required here, and deliberately not required by hasNoSchedule().
+     * The explicit null checks are what make an open end safe to read. A bound compared while
+     * unset is cast to an empty string, which sorts before every timestamp, so an unset start
+     * would read as "began long ago" and an unset end as "already over" — each bound would then
+     * decide the opposite of what leaving it out means.
+     *
+     * A row carrying neither bound is refused here and answered by carriesNoWindow() alone, so the
+     * two rungs stay disjoint and no row is claimed by both.
+     *
+     * Whether the override is switched on is not asked here. That belongs to the ranking, which
+     * applies it to every rung at once.
      *
      * @param TemplateOverrideInterface $override
      * @param string $now Current time in the store's timezone, formatted Y-m-d H:i:s
      * @return bool
      */
-    private function isWithinActiveSchedule(TemplateOverrideInterface $override, string $now): bool
+    private function isWithinOpenWindow(TemplateOverrideInterface $override, string $now): bool
     {
-        if (!$override->getIsActive()) {
-            return false;
-        }
-
         $activeFrom = $override->getActiveFrom();
         $activeTo = $override->getActiveTo();
 
-        if ($activeFrom === null || $activeTo === null) {
+        if ($activeFrom === null && $activeTo === null) {
             return false;
         }
 
         // Zero-padded Y-m-d H:i:s sorts lexicographically in chronological order.
-        return $activeFrom <= $now && $activeTo >= $now;
+        return ($activeFrom === null || $activeFrom <= $now)
+            && ($activeTo === null || $activeTo >= $now);
     }
 
     /**
-     * Whether an override applies immediately, i.e. carries no schedule at all
+     * Whether an override applies with no window at all, i.e. from publication until replaced
      *
-     * is_active is deliberately not tested. An inactive undated override still wins its rung and
-     * then stops the overlay in applyOverlay(), which is what suppresses any lower-ranked
-     * override standing behind it; testing it here would start applying overlays that are
-     * suppressed today.
+     * This is the exact complement of isWithinOpenWindow()'s bound test — that rung refuses a row
+     * carrying neither bound, this one accepts only such a row — so every candidate belongs to one
+     * rung or the other and never to both.
+     *
+     * Whether the override is switched on is not asked here either, for the same reason.
      *
      * @param TemplateOverrideInterface $override
      * @return bool
      */
-    private function hasNoSchedule(TemplateOverrideInterface $override): bool
+    private function carriesNoWindow(TemplateOverrideInterface $override): bool
     {
         return $override->getActiveFrom() === null && $override->getActiveTo() === null;
     }

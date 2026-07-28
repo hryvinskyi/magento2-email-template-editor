@@ -150,7 +150,13 @@ class TemplatePublisher implements TemplatePublisherInterface
     }
 
     /**
-     * Replace existing immediate published override for the same template and store
+     * Replace whatever published override already occupies the undated slot
+     *
+     * Occupancy, not liveness: an override that has been switched off still holds the slot, and
+     * leaving it behind would put two undated published rows on one template and store — one of
+     * which an admin could switch back on at any time, with nothing but their ids to say which of
+     * them should win. This method is the only thing standing between the two, so it has to see
+     * the switched-off row in order to remove it.
      *
      * @param TemplateOverrideInterface $draft
      * @return void
@@ -158,7 +164,7 @@ class TemplatePublisher implements TemplatePublisherInterface
      */
     private function handleImmediatePublish(TemplateOverrideInterface $draft): void
     {
-        $existing = $this->overrideRepository->getImmediatePublished(
+        $existing = $this->overrideRepository->getUndatedPublishedRegardlessOfState(
             $draft->getTemplateIdentifier(),
             $draft->getStoreId()
         );
@@ -288,7 +294,12 @@ class TemplatePublisher implements TemplatePublisherInterface
         $storeId = $override->getStoreId();
 
         if ($isBecomingImmediate) {
-            $existing = $this->overrideRepository->getImmediatePublished($identifier, $storeId);
+            // Occupancy again, for the same reason handleImmediatePublish() asks for it: a
+            // switched-off undated row still holds the slot this override is about to move into.
+            $existing = $this->overrideRepository->getUndatedPublishedRegardlessOfState(
+                $identifier,
+                $storeId
+            );
 
             if ($existing !== null && (int)$existing->getEntityId() !== (int)$override->getEntityId()) {
                 throw new LocalizedException(

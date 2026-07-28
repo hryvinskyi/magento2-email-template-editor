@@ -157,7 +157,7 @@ define([
             this.trigger('confirmAction', {
                 title: $.mage.__('Delete Draft'),
                 message: $.mage.__('Are you sure you want to delete this draft? This action cannot be undone.'),
-                detail: '<strong>' + (draftData.draft_name || $.mage.__('Untitled Draft')) + '</strong>',
+                detail: draftData.draft_name || $.mage.__('Untitled Draft'),
                 actionLabel: $.mage.__('Delete'),
                 type: 'danger',
                 onConfirm: function () {

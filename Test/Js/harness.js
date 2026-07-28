@@ -18,8 +18,18 @@
  * it loads and the suite goes red. A module that declares a dependency is refused for the same
  * reason - depending on nothing is the property being proved, not a style preference.
  *
- * Values come back from that context carrying its own prototypes, so comparisons here are made by
- * structure rather than by identity. That is also why this file carries its own small assertions
+ * The second loader is for the modules that cannot have that property: an adapter exists in order
+ * to touch a browser, and refusing it one leaves it untestable rather than pure. Such a module is
+ * evaluated against stand-ins named one by one at the call site - a module is handed nothing it did
+ * not ask for, and asking for something the test did not name is an error rather than an undefined
+ * that surfaces later as a puzzle. What those stand-ins are worth is stated where they are written:
+ * they answer the calls these modules make and nothing else, so this suite can say what an adapter
+ * decides and never what a browser then draws. Layout, styling, event ordering inside a real
+ * Knockout render and anything CodeMirror does with the marks it is handed are outside what any of
+ * it can prove.
+ *
+ * Values come back from those contexts carrying their own prototypes, so comparisons here are made
+ * by structure rather than by identity. That is also why this file carries its own small assertions
  * instead of using node's, whose strict comparisons check prototypes and would report two
  * identically shaped objects as different.
  */
@@ -66,6 +76,77 @@ function loadPureModule(relativePath) {
     }
 
     return exported;
+}
+
+/**
+ * Load a browser module against stand-ins for everything it depends on
+ *
+ * Every dependency the module declares must be named in `stubs`, and every global it reaches for
+ * must be named in `globals`: a context is built from those two and nothing else, so a module that
+ * grew a dependency the test does not know about fails while it loads rather than quietly picking
+ * up whatever node happens to have lying around.
+ *
+ * @param {string} relativePath path under view/adminhtml/web/js
+ * @param {Object} stubs stand-ins by AMD name
+ * @param {Object} [globals] what the module may see besides `define`
+ * @return {Object} the module's exports
+ */
+function loadStubbedModule(relativePath, stubs, globals) {
+    var file = path.join(SCRIPT_ROOT, relativePath),
+        source = fs.readFileSync(file, 'utf8'),
+        provided = stubs || {},
+        exported = null,
+        defined = false,
+        sandbox = {};
+
+    Object.keys(globals || {}).forEach(function (name) {
+        sandbox[name] = globals[name];
+    });
+
+    sandbox.define = function (dependencies, factory) {
+        var resolved;
+
+        if (typeof dependencies === 'function') {
+            throw new Error(relativePath + ' must declare its dependency list explicitly.');
+        }
+
+        resolved = dependencies.map(function (name) {
+            if (!Object.prototype.hasOwnProperty.call(provided, name)) {
+                throw new Error(
+                    relativePath + ' depends on ' + name + ', which this test names no stand-in for.'
+                );
+            }
+
+            return provided[name];
+        });
+
+        defined = true;
+        exported = factory.apply(null, resolved);
+    };
+
+    vm.runInNewContext(source, vm.createContext(sandbox), {filename: file});
+
+    if (!defined) {
+        throw new Error(relativePath + ' did not call define().');
+    }
+
+    return exported;
+}
+
+/**
+ * Read a file of this module as text
+ *
+ * For the checks whose subject is a file rather than a value: a template, a layout, a stylesheet.
+ * Nothing renders them here, so what can be said about them is structural.
+ *
+ * @param {...string} parts path segments below the module root
+ * @return {string}
+ */
+function readModuleFile() {
+    return fs.readFileSync(
+        path.join.apply(path, [MODULE_ROOT].concat(Array.prototype.slice.call(arguments))),
+        'utf8'
+    );
 }
 
 /**
@@ -176,6 +257,42 @@ function assertTrue(value, what) {
 }
 
 /**
+ * Fail unless the value is false
+ *
+ * @param {*} value
+ * @param {string} what
+ * @return {void}
+ */
+function assertFalse(value, what) {
+    if (value !== false) {
+        throw new Error(what + ': expected false, got ' + show(value));
+    }
+}
+
+/**
+ * Fail unless running the body throws
+ *
+ * @param {Function} body
+ * @param {string} what
+ * @return {Error} what was thrown, so a caller may say more about it
+ */
+function assertThrows(body, what) {
+    var thrown = null;
+
+    try {
+        body();
+    } catch (error) {
+        thrown = error;
+    }
+
+    if (thrown === null) {
+        throw new Error(what + ': expected a throw, got none');
+    }
+
+    return thrown;
+}
+
+/**
  * Register a test
  *
  * @param {string} name
@@ -217,10 +334,15 @@ function run() {
 }
 
 module.exports = {
+    MODULE_ROOT: MODULE_ROOT,
     loadPureModule: loadPureModule,
+    loadStubbedModule: loadStubbedModule,
+    readModuleFile: readModuleFile,
     assertSame: assertSame,
     assertLike: assertLike,
     assertTrue: assertTrue,
+    assertFalse: assertFalse,
+    assertThrows: assertThrows,
     test: test,
     run: run
 };

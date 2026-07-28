@@ -9,6 +9,8 @@ declare(strict_types=1);
 
 namespace Hryvinskyi\EmailTemplateEditor\Test\Unit\Model;
 
+use Hryvinskyi\EmailTemplateEditor\Model\Css\CssStructureParser;
+use Hryvinskyi\EmailTemplateEditor\Model\Css\CssSyntaxScanner;
 use Hryvinskyi\EmailTemplateEditor\Model\UtilityCssGenerator;
 use PHPUnit\Framework\TestCase;
 
@@ -35,7 +37,7 @@ class UtilityCssGeneratorTest extends TestCase
 
     protected function setUp(): void
     {
-        $this->generator = new UtilityCssGenerator();
+        $this->generator = new UtilityCssGenerator(new CssStructureParser(new CssSyntaxScanner()), new CssSyntaxScanner());
     }
 
     // ---------------------------------------------------------------------------------------
@@ -376,5 +378,107 @@ CSS;
         foreach ($markers as $marker) {
             self::assertStringContainsString($marker, $out, "Missing marker: $marker");
         }
+    }
+
+    public function testASemicolonInsideATokenValueDoesNotTruncateIt(): void
+    {
+        // A data URI carries "image/svg+xml;base64," inside url(). Splitting the theme on every
+        // semicolon cut the value there, so the utility class shipped half a URI and the image
+        // never loaded - with nothing to say so, because the rule itself was still valid CSS.
+        $theme = '@theme { --color-brand: url("data:image/svg+xml;base64,PHN2Zz48L3N2Zz4="); }';
+
+        // Only what the generator produced: the theme is echoed back verbatim ahead of it, so an
+        // assertion over the whole output would be satisfied by the input and prove nothing.
+        $out = $this->generatedPartOf($theme);
+
+        self::assertStringContainsString(
+            'url("data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=")',
+            $out,
+            'the whole value reaches the generated utility'
+        );
+        self::assertStringNotContainsString(
+            'url("data:image/svg+xml;)',
+            $out,
+            'no truncated value is emitted'
+        );
+    }
+
+    public function testATokenIsStillReadWhenAnEarlierOneHeldASemicolon(): void
+    {
+        // The failure was not confined to the token carrying the semicolon: everything the split
+        // produced after it was mis-paired, so neighbouring tokens went missing too.
+        $theme = '@theme {'
+            . ' --color-brand: url("data:image/svg+xml;base64,PHN2Zz4=");'
+            . ' --color-accent: #ff0000;'
+            . ' }';
+
+        $out = $this->generatedPartOf($theme);
+
+        self::assertStringContainsString('.text-accent', $out, 'the token after it is still read');
+        self::assertStringContainsString('#ff0000', $out, 'with its own value');
+    }
+
+    public function testASemicolonThatWouldEscapeTheDeclarationIsStillRemoved(): void
+    {
+        // The guard that strips these is what stops a token value closing its own declaration and
+        // adding others. Making it string-aware must not make it stop guarding.
+        //
+        // Only the generated part is examined: the theme itself is passed through verbatim by
+        // design, so asserting over the whole output would be asserting about the author's own CSS.
+        $theme = '@theme { --color-brand: red}; color: blue; }';
+        $generated = $this->generatedPartOf($theme);
+
+        self::assertStringNotContainsString('}', $this->declarationValuesIn($generated), 'nothing escapes');
+        self::assertStringNotContainsString(';', $this->declarationValuesIn($generated), 'nothing escapes');
+    }
+
+    public function testASemicolonInsideAnUnquotedUrlIsKept(): void
+    {
+        // url() takes an unquoted argument too, and then no string encloses the semicolon - only
+        // the parentheses do. Without that case the quoted form alone would cover the tests while
+        // this one silently lost its semicolon.
+        $out = $this->generatedPartOf('@theme { --color-brand: url(data:image/svg+xml;base64,PHN2Zz4=); }');
+
+        self::assertStringContainsString(
+            'url(data:image/svg+xml;base64,PHN2Zz4=)',
+            $out,
+            'the unquoted URL keeps its semicolon'
+        );
+    }
+
+    public function testASemicolonInsideAQuotedTokenValueIsKept(): void
+    {
+        // The parenthesis case (a data URI) is covered above and never reaches the quote branch,
+        // because url( opens first. A quoted family name is what exercises it on its own.
+        $out = $this->generatedPartOf('@theme { --font-brand: "Foo;Bar", sans-serif; }');
+
+        self::assertStringContainsString('"Foo;Bar"', $out, 'the quoted value keeps its semicolon');
+    }
+
+    /**
+     * What the generator produced for a theme, without the theme itself
+     *
+     * The theme is passed through verbatim ahead of the derived rules, so any assertion made over
+     * the whole output can be satisfied by the input and would hold even if nothing were generated.
+     *
+     * @param string $theme Theme source
+     * @return string The derived utility CSS alone
+     */
+    private function generatedPartOf(string $theme): string
+    {
+        return substr($this->generator->generate($theme), strlen($theme));
+    }
+
+    /**
+     * The values of every generated declaration, joined, with their terminators removed
+     *
+     * @param string $generated Generated utility CSS
+     * @return string Every value the generated rules declare
+     */
+    private function declarationValuesIn(string $generated): string
+    {
+        preg_match_all('/:\s*(.+?);$/m', $generated, $matches);
+
+        return implode("\n", $matches[1]);
     }
 }

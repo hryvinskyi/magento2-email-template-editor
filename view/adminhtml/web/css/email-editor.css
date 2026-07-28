@@ -2397,6 +2397,10 @@
 }
 
 .ete-confirm-detail {
+    /* The caller used to emphasise the name by wrapping it in markup, which is why this was bound
+       as HTML and why a draft name carrying a script tag ran on opening the dialog. Emphasis lives
+       here now, so the value can stay text. */
+    font-weight: 600;
     font-size: 12px;
     color: #666666;
     background: #f5f5f5;

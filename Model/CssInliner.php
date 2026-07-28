@@ -59,10 +59,11 @@ class CssInliner implements CssInlinerInterface
         }
 
         $combinedCss = implode("\n", $cssParts);
-        // Flatten BEFORE resolving so Tailwind's @layer properties scope-reset declarations
-        // (--tw-invert: initial; …) are dropped before the resolver builds its variable map.
-        // Otherwise their `initial` values would shadow per-rule defaults like
-        // `.invert { --tw-invert: invert(100%); }`.
+        // Flatten BEFORE resolving. The resolver reads `@layer` as a scope like any other
+        // grouping at-rule, so a `:root` still sitting inside one would only be visible to the
+        // rules in that same layer - while Tailwind emits its palette in `@layer theme` and the
+        // utilities that reference it in `@layer utilities`. Unwrapping first puts both in the
+        // same scope, which is what the browser sees once layer order is applied.
         $combinedCss = $this->layerFlattener->flatten($combinedCss);
         $combinedCss = $this->cssVariableResolver->resolve($combinedCss);
         // Magento's own {{inlinecss}} directive has already turned css/email-inline.css into
@@ -110,7 +111,7 @@ class CssInliner implements CssInlinerInterface
      */
     private function flattenStyleBlocksInHtml(string $html): string
     {
-        return (string)preg_replace_callback(
+        $rewritten = preg_replace_callback(
             '/(<style[^>]*>)(.*?)(<\/style>)/is',
             function (array $matches): string {
                 $css = $this->layerFlattener->flatten($matches[2]);
@@ -121,6 +122,8 @@ class CssInliner implements CssInlinerInterface
             },
             $html
         );
+
+        return $rewritten ?? $this->reportPcreFailure('flattening embedded <style> blocks', $html);
     }
 
     /**
@@ -145,7 +148,7 @@ class CssInliner implements CssInlinerInterface
 
         // `[^{}]*` before a `{` is exactly one prelude - selectors never contain braces, and
         // declaration bodies never contain a `{`, so values are never touched.
-        return (string)preg_replace_callback(
+        $rewritten = preg_replace_callback(
             '/([^{}]*)\{/',
             function (array $matches): string {
                 if (!str_contains($matches[1], '\\')) {
@@ -156,6 +159,8 @@ class CssInliner implements CssInlinerInterface
             },
             $css
         );
+
+        return $rewritten ?? $this->reportPcreFailure('rewriting escaped class selectors', $css);
     }
 
     /**
@@ -166,14 +171,39 @@ class CssInliner implements CssInlinerInterface
      */
     private function rewriteEscapedClassesInSelector(string $selector): string
     {
-        return (string)preg_replace_callback(
+        $rewritten = preg_replace_callback(
             '/\.((?:[-\w]|\\\\.)*\\\\.(?:[-\w]|\\\\.)*)/',
             static function (array $matches): string {
-                $className = (string)preg_replace('/\\\\(.)/', '$1', $matches[1]);
+                $className = preg_replace('/\\\\(.)/', '$1', $matches[1]) ?? $matches[1];
 
                 return '[class~="' . addcslashes($className, '"\\') . '"]';
             },
             $selector
         );
+
+        return $rewritten ?? $this->reportPcreFailure('rewriting escaped classes in a selector', $selector);
+    }
+
+    /**
+     * Log a PCRE bail-out and hand back the untouched input
+     *
+     * `preg_replace*` answers `null` for a failed run - a backtrack or recursion limit, or a
+     * subject that is not valid UTF-8 under a `/u` pattern. Casting that to a string yields
+     * `''`, which for a stylesheet means every rule silently disappears and for the markup
+     * means the whole email does. The input is always the safer answer: the transformation is
+     * lost, nothing else is, and the log says which one.
+     *
+     * @param string $stage What was being rewritten, for the log entry
+     * @param string $input The subject to fall back to
+     * @return string
+     */
+    private function reportPcreFailure(string $stage, string $input): string
+    {
+        $this->logger->warning(
+            'CSS inlining skipped a step: pattern matching failed while ' . $stage
+            . ' (' . preg_last_error_msg() . '). The input was left unchanged.'
+        );
+
+        return $input;
     }
 }

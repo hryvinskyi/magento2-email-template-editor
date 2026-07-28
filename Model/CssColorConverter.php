@@ -57,7 +57,7 @@ class CssColorConverter implements CssColorConverterInterface
         // `[^()]*` deliberately refuses to match nested functions. An `oklch(from …)`
         // relative colour, a `calc()` channel or a still-unresolved `var()` therefore falls
         // through untouched instead of being converted from garbage.
-        return (string)preg_replace_callback(
+        return preg_replace_callback(
             '/\b(?:oklch|oklab)\(\s*[^()]*?\s*\)/i',
             function (array $matches): string {
                 $color = $this->colorParser->parse($matches[0]);
@@ -65,7 +65,7 @@ class CssColorConverter implements CssColorConverterInterface
                 return $color === null ? $matches[0] : $color->toCssString();
             },
             $css
-        );
+        ) ?? $css;
     }
 
     /**
@@ -89,13 +89,16 @@ class CssColorConverter implements CssColorConverterInterface
         // The balanced-brace match is outermost-first, so a nested mix is consumed as part of
         // its parent's argument list and never gets its own turn here; `parseMixOperand`
         // recurses into it instead.
-        return (string)preg_replace_callback(
+        // A `null` answer means PCRE gave up (recursion or backtrack limit on a pathological
+        // nesting depth). Handing back the input leaves the colours unconverted; casting the
+        // `null` to a string would hand back an empty stylesheet instead.
+        return preg_replace_callback(
             '/\bcolor-mix(\((?:[^()]++|(?1))*+\))/i',
             function (array $matches): string {
                 return $this->evaluateColorMix(substr($matches[1], 1, -1), 0) ?? $matches[0];
             },
             $css
-        );
+        ) ?? $css;
     }
 
     /**
@@ -285,7 +288,7 @@ class CssColorConverter implements CssColorConverterInterface
     {
         $channel = '[+-]?(?:\d+\.?\d*|\.\d+)(?:%|deg|grad|rad|turn)?';
 
-        return (string)preg_replace_callback(
+        return preg_replace_callback(
             '/(rgb|hsl)a?\(\s*(' . $channel . ')\s+(' . $channel . ')\s+(' . $channel
             . ')\s*(?:\/\s*(' . $channel . '))?\s*\)/',
             static function (array $matches): string {
@@ -302,6 +305,6 @@ class CssColorConverter implements CssColorConverterInterface
                 return $function . '(' . $first . ', ' . $second . ', ' . $third . ')';
             },
             $css
-        );
+        ) ?? $css;
     }
 }

@@ -308,8 +308,16 @@
             </div>
             <div class="ete-modal-body">
                 <p class="ete-confirm-message" data-bind="text: confirmModalMessage"></p>
+                <!--
+                    Bound as text. What lands here is the name of the thing about to be deleted or
+                    published - a draft name, a version comment - and those are free text an
+                    administrator typed. Rendered as markup, a comment carrying a script tag runs
+                    the moment somebody opens the confirmation for that row, which is exactly the
+                    action an administrator takes without thinking. Emphasis is the stylesheet's
+                    job here, not the caller's.
+                -->
                 <!-- ko if: confirmModalDetail() -->
-                <div class="ete-confirm-detail" data-bind="html: confirmModalDetail"></div>
+                <div class="ete-confirm-detail" data-bind="text: confirmModalDetail"></div>
                 <!-- /ko -->
             </div>
             <div class="ete-modal-footer">

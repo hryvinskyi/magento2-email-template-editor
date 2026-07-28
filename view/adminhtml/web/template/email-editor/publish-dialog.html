@@ -33,7 +33,15 @@
                     <div class="ete-publish-change-item" data-bind="css: 'ete-change-' + type">
                         <span class="ete-publish-change-icon" data-bind="html: icon"></span>
                         <span class="ete-publish-change-label" data-bind="text: label"></span>
-                        <!-- ko if: detail -->
+                        <!--
+                            Tested through $data: a binding inside a list is evaluated in the row's
+                            own scope, where a property the row does not carry is an unresolved name
+                            and throws rather than reading as absent - which takes the whole dialog
+                            down instead of leaving one row without its detail. Every row built
+                            today carries this, but nothing about the shape says so, and this
+                            component takes its rows from whatever a caller hands it.
+                        -->
+                        <!-- ko if: $data.detail -->
                         <span class="ete-publish-change-detail" data-bind="text: detail"></span>
                         <!-- /ko -->
                     </div>

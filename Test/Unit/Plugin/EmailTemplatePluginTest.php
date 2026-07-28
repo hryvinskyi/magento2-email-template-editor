@@ -52,6 +52,10 @@ class EmailTemplatePluginTest extends TestCase
     private const NOW = '2026-07-28 12:00:00';
     private const WINDOW_OPEN_FROM = '2026-07-01 00:00:00';
     private const WINDOW_OPEN_TO = '2026-08-31 00:00:00';
+    private const WINDOW_PAST_FROM = '2026-01-01 00:00:00';
+    private const WINDOW_PAST_TO = '2026-02-01 00:00:00';
+    private const WINDOW_FUTURE_FROM = '2026-09-01 00:00:00';
+    private const WINDOW_FUTURE_TO = '2026-10-01 00:00:00';
 
     /**
      * The eight rungs in descending priority: [identifier, store scope, carries a schedule]
@@ -245,39 +249,140 @@ class EmailTemplatePluginTest extends TestCase
         self::assertSame('scheduled', $this->applyAndCaptureContent(self::THEME_CODE));
     }
 
-    public function testARowWithNoStartDateIsNotPromotedIntoTheScheduledBlock(): void
+    /**
+     * @return array<string, array{0: string|null, 1: string|null, 2: bool}>
+     */
+    public function windowShapeProvider(): array
     {
-        // The dangerous half of the null trap. Comparing an unset start bound directly would cast
-        // it to an empty string, which sorts before every timestamp, so this row would read as
-        // "started long ago, ends in the future" and jump the whole immediate block - beating a
-        // genuine undated override sitting at a better identifier and store.
+        return [
+            'both bounds, now inside the window' => [self::WINDOW_OPEN_FROM, self::WINDOW_OPEN_TO, true],
+            'both bounds, window has not started' => [self::WINDOW_FUTURE_FROM, self::WINDOW_FUTURE_TO, false],
+            'both bounds, window is over' => [self::WINDOW_PAST_FROM, self::WINDOW_PAST_TO, false],
+            'start only, already reached' => [self::WINDOW_OPEN_FROM, null, true],
+            'start only, still ahead' => [self::WINDOW_FUTURE_FROM, null, false],
+            'end only, still ahead' => [null, self::WINDOW_OPEN_TO, true],
+            'end only, already passed' => [null, self::WINDOW_PAST_TO, false],
+            'no window at all' => [null, null, true],
+            'both bounds, starting exactly now' => [self::NOW, self::WINDOW_OPEN_TO, true],
+            'both bounds, ending exactly now' => [self::WINDOW_OPEN_FROM, self::NOW, true],
+            'start only, exactly now' => [self::NOW, null, true],
+            'end only, exactly now' => [null, self::NOW, true],
+        ];
+    }
+
+    /**
+     * Every shape an admin can publish, and whether that override reaches the email
+     *
+     * A bound that is not set is an open end: the row applies from the bound it does carry, or
+     * until it. Both bounds are inclusive. The same twelve shapes are pinned against the
+     * repository's lookups, because it is exactly this rule existing in two implementations that
+     * let a published override apply to nobody for as long as it did.
+     *
+     * @dataProvider windowShapeProvider
+     * @param string|null $activeFrom
+     * @param string|null $activeTo
+     * @param bool $expected
+     * @return void
+     */
+    public function testEveryWindowShapeIsAppliedForExactlyAsLongAsItSays(
+        ?string $activeFrom,
+        ?string $activeTo,
+        bool $expected
+    ): void {
         $this->candidates = $this->group([
-            $this->override(1, self::TEMPLATE_ID, 0, 'half-open', null, self::WINDOW_OPEN_TO),
+            $this->override(1, self::TEMPLATE_ID, 0, 'applied', $activeFrom, $activeTo),
+        ]);
+
+        self::assertSame($expected ? 'applied' : null, $this->applyAndCaptureContent(null));
+    }
+
+    /**
+     * @return array<string, array{0: string|null, 1: string|null}>
+     */
+    public function halfOpenWindowProvider(): array
+    {
+        return [
+            'only a start, already reached' => [self::WINDOW_OPEN_FROM, null],
+            'only an end, still ahead' => [null, self::WINDOW_OPEN_TO],
+        ];
+    }
+
+    /**
+     * A window left open at one end is a window, and so outranks an override carrying none
+     *
+     * The half-open row sits at the worst rung and the undated one at the best, so only the window
+     * dimension can hand it the win. This is what the publish dialog produces from a single date,
+     * and it used to satisfy neither rung: published, listed in the admin as live, and reaching
+     * nobody.
+     *
+     * @dataProvider halfOpenWindowProvider
+     * @param string|null $activeFrom
+     * @param string|null $activeTo
+     * @return void
+     */
+    public function testAWindowOpenAtOneEndOutranksAnUndatedOverride(?string $activeFrom, ?string $activeTo): void
+    {
+        $this->candidates = $this->group([
+            $this->override(1, self::TEMPLATE_ID, 0, 'half-open', $activeFrom, $activeTo),
             $this->override(2, self::THEMED_ID, self::STORE_ID, 'undated', null, null),
         ]);
 
-        self::assertSame('undated', $this->applyAndCaptureContent(self::THEME_CODE));
+        self::assertSame('half-open', $this->applyAndCaptureContent(self::THEME_CODE));
     }
 
-    public function testARowWithOnlyAStartDateIsInvisible(): void
-    {
+    /**
+     * @dataProvider halfOpenWindowProvider
+     * @param string|null $activeFrom
+     * @param string|null $activeTo
+     * @return void
+     */
+    public function testAHalfOpenRowThatWasSwitchedOffLeavesTheRowBelowItApplying(
+        ?string $activeFrom,
+        ?string $activeTo
+    ): void {
         $this->candidates = $this->group([
-            $this->override(1, self::THEMED_ID, self::STORE_ID, 'half-open', self::WINDOW_OPEN_FROM, null),
+            $this->override(1, self::THEMED_ID, self::STORE_ID, 'inactive', $activeFrom, $activeTo, false),
+            $this->override(2, self::TEMPLATE_ID, 0, 'active', null, null),
         ]);
 
-        self::assertNull(
+        self::assertSame(
+            'active',
             $this->applyAndCaptureContent(self::THEME_CODE),
-            'A half-open window matches neither the scheduled nor the immediate test.'
+            'is_active is required on the window rung, so the switched-off row does not mask.'
         );
     }
 
-    public function testARowWithOnlyAnEndDateIsInvisible(): void
+    /**
+     * @return array<string, array{0: string|null, 1: string|null}>
+     */
+    public function closedHalfOpenWindowProvider(): array
     {
+        return [
+            'only a start, still ahead' => [self::WINDOW_FUTURE_FROM, null],
+            'only an end, already passed' => [null, self::WINDOW_PAST_TO],
+        ];
+    }
+
+    /**
+     * @dataProvider closedHalfOpenWindowProvider
+     * @param string|null $activeFrom
+     * @param string|null $activeTo
+     * @return void
+     */
+    public function testAHalfOpenWindowOutsideItsPeriodDoesNotBlockTheUndatedRow(
+        ?string $activeFrom,
+        ?string $activeTo
+    ): void {
         $this->candidates = $this->group([
-            $this->override(1, self::THEMED_ID, self::STORE_ID, 'half-open', null, self::WINDOW_OPEN_TO),
+            $this->override(1, self::THEMED_ID, self::STORE_ID, 'half-open', $activeFrom, $activeTo),
+            $this->override(2, self::TEMPLATE_ID, 0, 'undated', null, null),
         ]);
 
-        self::assertNull($this->applyAndCaptureContent(self::THEME_CODE));
+        self::assertSame(
+            'undated',
+            $this->applyAndCaptureContent(self::THEME_CODE),
+            'A window that is not open loses its rung outright rather than masking what stands behind it.'
+        );
     }
 
     public function testAClosedScheduleWindowIsSkippedInFavourOfAnUndatedRow(): void
@@ -305,18 +410,52 @@ class EmailTemplatePluginTest extends TestCase
     //  is_active
     // -------------------------------------------------------------------------------------
 
-    public function testAnInactiveUndatedRowStillMasksAnActiveRowBelowIt(): void
+    /**
+     * Switching a store-view override off falls through to the All Store Views one
+     *
+     * Switching an override off means it is not there, so the next one down applies. The
+     * switched-off row must not win its rung and then decline to fill it, which is what used to
+     * hand the admin stock templates instead of the override they were falling back to.
+     *
+     * @return void
+     */
+    public function testSwitchingAStoreViewOverrideOffLetsTheDefaultScopeOneApply(): void
     {
-        // is_active is filtered for the scheduled rungs and deliberately not for the immediate
-        // ones, so the inactive row wins its rung and then suppresses the overlay entirely.
         $this->candidates = $this->group([
-            $this->override(1, self::THEMED_ID, self::STORE_ID, 'inactive', null, null, false),
-            $this->override(2, self::TEMPLATE_ID, 0, 'active', null, null),
+            $this->override(1, self::THEMED_ID, self::STORE_ID, 'switched-off', null, null, false),
+            $this->override(2, self::TEMPLATE_ID, 0, 'all-store-views', null, null),
+        ]);
+
+        self::assertSame('all-store-views', $this->applyAndCaptureContent(self::THEME_CODE));
+    }
+
+    public function testSwitchingTheOnlyOverrideOffFallsThroughToTheStockTemplate(): void
+    {
+        $this->candidates = $this->group([
+            $this->override(1, self::THEMED_ID, self::STORE_ID, 'switched-off', null, null, false),
         ]);
 
         self::assertNull(
             $this->applyAndCaptureContent(self::THEME_CODE),
-            'An inactive undated override masks everything ranked below it.'
+            'With nothing standing behind it, the email is the template Magento shipped.'
+        );
+    }
+
+    /**
+     * @dataProvider windowShapeProvider
+     * @param string|null $activeFrom
+     * @param string|null $activeTo
+     * @return void
+     */
+    public function testNoWindowShapeSurvivesBeingSwitchedOff(?string $activeFrom, ?string $activeTo): void
+    {
+        $this->candidates = $this->group([
+            $this->override(1, self::TEMPLATE_ID, 0, 'switched-off', $activeFrom, $activeTo, false),
+        ]);
+
+        self::assertNull(
+            $this->applyAndCaptureContent(null),
+            'Being switched off settles it before the window is even considered.'
         );
     }
 

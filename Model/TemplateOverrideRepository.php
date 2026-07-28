@@ -12,6 +12,7 @@ namespace Hryvinskyi\EmailTemplateEditor\Model;
 use Hryvinskyi\EmailTemplateEditor\Api\Data\TemplateOverrideInterface;
 use Hryvinskyi\EmailTemplateEditor\Api\TemplateOverrideRepositoryInterface;
 use Hryvinskyi\EmailTemplateEditor\Model\ResourceModel\TemplateOverride as TemplateOverrideResource;
+use Hryvinskyi\EmailTemplateEditor\Model\ResourceModel\TemplateOverride\Collection;
 use Hryvinskyi\EmailTemplateEditor\Model\ResourceModel\TemplateOverride\CollectionFactory;
 use Magento\Framework\Exception\CouldNotDeleteException;
 use Magento\Framework\Exception\CouldNotSaveException;
@@ -229,17 +230,24 @@ class TemplateOverrideRepository implements TemplateOverrideRepositoryInterface
      */
     public function getImmediatePublished(string $identifier, int $storeId): ?TemplateOverrideInterface
     {
-        $collection = $this->collectionFactory->create();
-        $collection->addFieldToFilter('template_identifier', $identifier);
-        $collection->addFieldToFilter('store_id', $storeId);
-        $collection->addFieldToFilter('status', TemplateOverrideInterface::STATUS_PUBLISHED);
-        $collection->addFieldToFilter('active_from', ['null' => true]);
-        $collection->addFieldToFilter('active_to', ['null' => true]);
-        $collection->setPageSize(1);
+        $collection = $this->undatedPublished($identifier, $storeId);
+        $collection->addFieldToFilter(TemplateOverrideInterface::IS_ACTIVE, 1);
+        $this->takeOneDeterministically($collection);
 
-        $item = $collection->getFirstItem();
+        return $this->firstOrNull($collection);
+    }
 
-        return $item->getEntityId() ? $item : null;
+    /**
+     * @inheritDoc
+     */
+    public function getUndatedPublishedRegardlessOfState(
+        string $identifier,
+        int $storeId
+    ): ?TemplateOverrideInterface {
+        $collection = $this->undatedPublished($identifier, $storeId);
+        $this->takeOneDeterministically($collection);
+
+        return $this->firstOrNull($collection);
     }
 
     /**
@@ -247,19 +255,105 @@ class TemplateOverrideRepository implements TemplateOverrideRepositoryInterface
      */
     public function getActiveScheduledPublished(string $identifier, int $storeId): ?TemplateOverrideInterface
     {
-        $now = $this->timezone->date()->format('Y-m-d H:i:s');
-
         $collection = $this->collectionFactory->create();
-        $collection->addFieldToFilter('template_identifier', $identifier);
-        $collection->addFieldToFilter('store_id', $storeId);
-        $collection->addFieldToFilter('status', TemplateOverrideInterface::STATUS_PUBLISHED);
-        $collection->addFieldToFilter('is_active', 1);
-        $collection->addFieldToFilter('active_from', ['lteq' => $now]);
-        $collection->addFieldToFilter('active_to', ['gteq' => $now]);
-        $collection->setPageSize(1);
+        $collection->addFieldToFilter(TemplateOverrideInterface::TEMPLATE_IDENTIFIER, $identifier);
+        $collection->addFieldToFilter(TemplateOverrideInterface::STORE_ID, $storeId);
+        $collection->addFieldToFilter(TemplateOverrideInterface::STATUS, TemplateOverrideInterface::STATUS_PUBLISHED);
+        $collection->addFieldToFilter(TemplateOverrideInterface::IS_ACTIVE, 1);
+        $this->restrictToOpenWindow($collection, $this->timezone->date()->format('Y-m-d H:i:s'));
+        $this->takeOneDeterministically($collection);
 
+        return $this->firstOrNull($collection);
+    }
+
+    /**
+     * Start a lookup for the published rows of one template and store that carry no window
+     *
+     * The shape both undated lookups share, before they part company over whether a row that has
+     * been switched off counts. Switched-off rows still occupy the slot, so the state filter
+     * belongs to the caller and not here.
+     *
+     * @param string $identifier
+     * @param int $storeId
+     * @return Collection
+     */
+    private function undatedPublished(string $identifier, int $storeId): Collection
+    {
+        $collection = $this->collectionFactory->create();
+        $collection->addFieldToFilter(TemplateOverrideInterface::TEMPLATE_IDENTIFIER, $identifier);
+        $collection->addFieldToFilter(TemplateOverrideInterface::STORE_ID, $storeId);
+        $collection->addFieldToFilter(TemplateOverrideInterface::STATUS, TemplateOverrideInterface::STATUS_PUBLISHED);
+        $collection->addFieldToFilter(TemplateOverrideInterface::ACTIVE_FROM, ['null' => true]);
+        $collection->addFieldToFilter(TemplateOverrideInterface::ACTIVE_TO, ['null' => true]);
+
+        return $collection;
+    }
+
+    /**
+     * Read the row a single-row lookup found, distinguishing "none" from the empty entity
+     *
+     * An emptied collection still hands back an entity rather than nothing; it is the missing id
+     * that says no row matched.
+     *
+     * @param Collection $collection
+     * @return TemplateOverrideInterface|null
+     */
+    private function firstOrNull(Collection $collection): ?TemplateOverrideInterface
+    {
         $item = $collection->getFirstItem();
 
         return $item->getEntityId() ? $item : null;
+    }
+
+    /**
+     * Restrict a collection to the rows whose availability window is open at the given moment
+     *
+     * Both bounds of the window are optional, and a bound that is not set is an open end rather
+     * than a missing window: a row carrying only active_from applies from that moment onward, one
+     * carrying only active_to applies until it, and one carrying both applies between them. Both
+     * bounds are inclusive. Comparing the columns directly instead — "active_from <= now AND
+     * active_to >= now" — silently drops every half-open row, because no comparison against NULL
+     * is ever true, and a publish carrying a single date is exactly what creates those rows.
+     *
+     * A row carrying neither bound is excluded rather than read as a window that is always open:
+     * that row is the undated one getImmediatePublished() answers with, and keeping the two sets
+     * disjoint is what stops one row from being claimed by both questions.
+     *
+     * @param Collection $collection
+     * @param string $now Current time in the store's timezone, formatted Y-m-d H:i:s
+     * @return void
+     */
+    private function restrictToOpenWindow(Collection $collection, string $now): void
+    {
+        $collection->addFieldToFilter(
+            [TemplateOverrideInterface::ACTIVE_FROM, TemplateOverrideInterface::ACTIVE_TO],
+            [['notnull' => true], ['notnull' => true]]
+        );
+        $collection->addFieldToFilter(
+            [TemplateOverrideInterface::ACTIVE_FROM, TemplateOverrideInterface::ACTIVE_FROM],
+            [['null' => true], ['lteq' => $now]]
+        );
+        $collection->addFieldToFilter(
+            [TemplateOverrideInterface::ACTIVE_TO, TemplateOverrideInterface::ACTIVE_TO],
+            [['null' => true], ['gteq' => $now]]
+        );
+    }
+
+    /**
+     * Reduce a collection to the single row that answers a "which override applies" question
+     *
+     * The order is stated rather than left to whichever plan the optimizer picks, so that two
+     * callers asking the same question — and the same caller asking it twice — are always given
+     * the same row. Ascending entity id makes the oldest row the answer; the shapes this is used
+     * for are meant to hold one row each, and where they can briefly hold two, such as two windows
+     * that share the instant one ends and the next begins, the older one is the established one.
+     *
+     * @param Collection $collection
+     * @return void
+     */
+    private function takeOneDeterministically(Collection $collection): void
+    {
+        $collection->setOrder(TemplateOverrideInterface::ENTITY_ID, 'ASC');
+        $collection->setPageSize(1);
     }
 }

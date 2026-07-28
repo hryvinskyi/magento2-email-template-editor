@@ -2332,7 +2332,7 @@ define([
             this.showConfirm({
                 title: $.mage.__('Discard Draft'),
                 message: $.mage.__('Are you sure you want to discard this draft? The published version will remain active.'),
-                detail: '<strong>' + self.currentTemplateId() + '</strong>',
+                detail: self.currentTemplateId(),
                 actionLabel: $.mage.__('Discard'),
                 type: 'danger',
                 onConfirm: function () {
@@ -2377,7 +2377,7 @@ define([
             this.showConfirm({
                 title: $.mage.__('Reset to Default'),
                 message: $.mage.__('This will permanently remove all customizations for this template and revert to the Magento default. This cannot be undone.'),
-                detail: '<strong>' + self.currentTemplateId() + '</strong>',
+                detail: self.currentTemplateId(),
                 actionLabel: $.mage.__('Reset to Default'),
                 type: 'danger',
                 onConfirm: function () {

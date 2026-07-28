@@ -142,7 +142,21 @@ interface TemplateOverrideRepositoryInterface
     ): array;
 
     /**
-     * Get the immediate (no date range) published override for a template identifier and store ID
+     * Get the live published override that carries no availability window at all
+     *
+     * A published override's availability window has two independently optional bounds. Neither
+     * bound set — the shape this method answers for — means the override applies from the moment
+     * it is published until it is replaced. The other three shapes belong to
+     * getActiveScheduledPublished(), so the two methods can never name the same row and at most
+     * one of them names a row for a given identifier and store at a given moment.
+     *
+     * A row that has been switched off is not returned: switching an override off means it is not
+     * there, so the answer to "which undated override applies" has to skip it. A caller asking the
+     * different question of whether the undated slot is occupied — which a switched-off row still
+     * does — wants getUndatedPublishedRegardlessOfState() instead.
+     *
+     * When more than one row would qualify the one with the lowest entity id is returned, so
+     * repeated calls agree on which row that is.
      *
      * @param string $identifier
      * @param int $storeId
@@ -151,7 +165,41 @@ interface TemplateOverrideRepositoryInterface
     public function getImmediatePublished(string $identifier, int $storeId): ?TemplateOverrideInterface;
 
     /**
-     * Get the published override whose active_from/active_to range covers the current time
+     * Get the published override occupying the undated slot, switched on or not
+     *
+     * The occupancy question, as opposed to the liveness question getImmediatePublished() answers.
+     * A template and store may hold only one undated published override, and a row that has been
+     * switched off still holds that place — it can be switched back on, and a second undated row
+     * published behind it would leave two rows competing for one slot with nothing to separate
+     * them. Whoever creates or unschedules an undated override must ask this before doing so.
+     *
+     * When more than one row holds the slot the lowest entity id is returned, so that a caller
+     * removing what it finds converges on a single row rather than oscillating between two.
+     *
+     * @param string $identifier
+     * @param int $storeId
+     * @return TemplateOverrideInterface|null
+     */
+    public function getUndatedPublishedRegardlessOfState(
+        string $identifier,
+        int $storeId
+    ): ?TemplateOverrideInterface;
+
+    /**
+     * Get the active published override whose availability window is open at the current moment
+     *
+     * A bound that is not set is an open end, not a missing window: active_from alone means the
+     * override applies from that moment onward, active_to alone means it applies until then, and
+     * both together mean it applies between them. Both bounds are inclusive. A row carrying
+     * neither bound has no window and is answered by getImmediatePublished() instead, never here.
+     *
+     * Only rows with is_active set are considered. If two windows are open at once — which the
+     * schedule conflict check confines to the single instant where one window ends and the next
+     * begins — the lowest entity id wins.
+     *
+     * A row returned here outranks the undated row from getImmediatePublished(). The window is the
+     * exception an admin schedules to displace the standing override for a period, so for as long
+     * as it is open it is the override that applies.
      *
      * @param string $identifier
      * @param int $storeId

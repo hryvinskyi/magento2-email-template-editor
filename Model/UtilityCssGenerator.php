@@ -9,6 +9,8 @@ declare(strict_types=1);
 
 namespace Hryvinskyi\EmailTemplateEditor\Model;
 
+use Hryvinskyi\EmailTemplateEditor\Api\Css\CssStructureParserInterface;
+use Hryvinskyi\EmailTemplateEditor\Api\Css\CssSyntaxScannerInterface;
 use Hryvinskyi\EmailTemplateEditor\Api\UtilityCssGeneratorInterface;
 use Magento\Framework\ObjectManager\ResetAfterRequestInterface;
 
@@ -49,6 +51,18 @@ class UtilityCssGenerator implements UtilityCssGeneratorInterface, ResetAfterReq
      * @var array<string, string>
      */
     private array $generatedCss = [];
+
+    /**
+     * @param CssStructureParserInterface $structureParser Splits a declaration block the way CSS
+     *        does, so a semicolon inside a value is not mistaken for a separator
+     * @param CssSyntaxScannerInterface $syntaxScanner Finds the ends of strings and parentheses, so
+     *        a character inside one is not mistaken for a character that closes a declaration
+     */
+    public function __construct(
+        private readonly CssStructureParserInterface $structureParser,
+        private readonly CssSyntaxScannerInterface $syntaxScanner
+    ) {
+    }
 
     /**
      * {@inheritDoc}
@@ -276,20 +290,33 @@ class UtilityCssGenerator implements UtilityCssGeneratorInterface, ResetAfterReq
     private function extractTokenMap(string $css, string $prefix, array $excludeNestedPrefixes = []): array
     {
         $tokens = [];
-        $pattern = '/--' . preg_quote($prefix, '/') . '-([A-Za-z0-9_-]+)\s*:\s*([^;]+);/';
+        // Declarations are separated by the structure parser rather than by splitting on every
+        // semicolon. A token value may legitimately contain one - a data URI carries
+        // `image/svg+xml;base64,` inside url() - and cutting there stores half a value and emits a
+        // utility class whose declaration is broken, silently. The parser knows that a semicolon
+        // inside a string, a comment, parentheses or a nested block is part of the value.
+        $namePattern = '/^--' . preg_quote($prefix, '/') . '-([A-Za-z0-9_-]+)$/';
 
-        if (preg_match_all($pattern, $css, $matches, PREG_SET_ORDER)) {
-            foreach ($matches as $match) {
-                $name = $match[1];
+        foreach ($this->structureParser->splitDeclarations($css) as $declaration) {
+            $separator = strpos($declaration, ':');
 
-                foreach ($excludeNestedPrefixes as $nested) {
-                    if (str_starts_with($name, $nested . '-')) {
-                        continue 2;
-                    }
-                }
-
-                $tokens[$name] = trim($match[2]);
+            if ($separator === false) {
+                continue;
             }
+
+            if (preg_match($namePattern, trim(substr($declaration, 0, $separator)), $matched) !== 1) {
+                continue;
+            }
+
+            $name = $matched[1];
+
+            foreach ($excludeNestedPrefixes as $nested) {
+                if (str_starts_with($name, $nested . '-')) {
+                    continue 2;
+                }
+            }
+
+            $tokens[$name] = trim(substr($declaration, $separator + 1));
         }
 
         return $tokens;
@@ -653,12 +680,49 @@ class UtilityCssGenerator implements UtilityCssGeneratorInterface, ResetAfterReq
     /**
      * Escape a CSS value to prevent injection
      *
-     * @param string $value
-     * @return string
+     * A bare semicolon or brace in a token value would close the declaration this value is written
+     * into and let whatever follows become declarations of its own, so those are removed. Inside a
+     * string or a parenthesis they close nothing and are part of the value: a data URI carries
+     * `image/svg+xml;base64,` within url(), and removing that semicolon leaves a URI that resolves
+     * to nothing while the rule around it still reads as valid CSS - a broken image with no error
+     * anywhere. The scanner is what tells the two apart.
+     *
+     * @param string $value Token value as authored
+     * @return string The value with only the characters that would escape the declaration removed
      */
     private function escapeValue(string $value): string
     {
-        return preg_replace('/[;\{\}]/', '', $value) ?? $value;
+        $escaped = '';
+        $length = strlen($value);
+        $position = 0;
+
+        while ($position < $length) {
+            $character = $value[$position];
+
+            if ($character === '"' || $character === "'") {
+                $end = $this->syntaxScanner->skipString($value, $position);
+                $escaped .= substr($value, $position, $end - $position);
+                $position = $end;
+
+                continue;
+            }
+
+            if ($character === '(') {
+                $end = $this->syntaxScanner->findParenthesisEnd($value, $position);
+                $escaped .= substr($value, $position, $end - $position);
+                $position = $end;
+
+                continue;
+            }
+
+            if ($character !== ';' && $character !== '{' && $character !== '}') {
+                $escaped .= $character;
+            }
+
+            $position++;
+        }
+
+        return $escaped;
     }
 
     /**

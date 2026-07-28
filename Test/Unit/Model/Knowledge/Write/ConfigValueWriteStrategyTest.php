@@ -25,13 +25,16 @@ use Magento\Config\Model\PreparedValueFactory;
 use Magento\Framework\App\Cache\TypeListInterface;
 use Magento\Framework\App\Config\ConfigResource\ConfigInterface as ConfigResource;
 use Magento\Framework\App\Config\Value;
+use Magento\Framework\App\Config\ValueInterface;
 use Magento\Framework\Exception\LocalizedException;
 use Magento\Framework\Exception\RuntimeException;
+use Magento\Framework\Message\ManagerInterface as MessageManagerInterface;
 use Magento\Framework\Phrase;
 use Magento\Variable\Model\Source\Variables as ConfigVariables;
 use PHPUnit\Framework\MockObject\MockObject;
 use PHPUnit\Framework\TestCase;
 use Psr\Log\LoggerInterface;
+use RuntimeException as PhpRuntimeException;
 
 /**
  * Changing a store configuration value from the editor.
@@ -79,6 +82,15 @@ class ConfigValueWriteStrategyTest extends TestCase
 
     private LoggerInterface&MockObject $logger;
 
+    private MessageManagerInterface&MockObject $messageManager;
+
+    /**
+     * Failures the strategy logged during the test under way, in the order it logged them
+     *
+     * @var string[]
+     */
+    private array $loggedFailures = [];
+
     /**
      * @inheritDoc
      */
@@ -91,6 +103,7 @@ class ConfigValueWriteStrategyTest extends TestCase
         $this->configResource = $this->createMock(ConfigResource::class);
         $this->cacheTypeList = $this->createMock(TypeListInterface::class);
         $this->logger = $this->createMock(LoggerInterface::class);
+        $this->messageManager = $this->createMock(MessageManagerInterface::class);
 
         $this->authSession = $this->getMockBuilder(AuthSession::class)
             ->disableOriginalConstructor()
@@ -251,6 +264,177 @@ class ConfigValueWriteStrategyTest extends TestCase
             ->with(self::SENDER_EMAIL_PATH, 'orders@example.com', 'stores', self::STORE_ID);
 
         $this->strategy()->write($this->entry(self::SENDER_EMAIL_PATH), self::STORE_ID, ' orders@example.com ');
+    }
+
+    /**
+     * A field's own work after a save is run, and run in the only order in which it can be honest
+     * about what has happened: after the row exists. Skipping it because no path currently on offer
+     * needs it would fail silently the moment one did.
+     *
+     * @return void
+     */
+    public function testWhatTheFieldDoesAfterASaveIsRunOnceTheRowHasLanded(): void
+    {
+        $prepared = $this->fieldWhoseModelTakesPartInTheSave();
+
+        $order = [];
+        $this->configResource->method('saveConfig')->willReturnCallback(
+            static function () use (&$order): void {
+                $order[] = 'row written';
+            }
+        );
+        $prepared->expects(self::once())->method('afterSave')->willReturnCallback(
+            static function () use (&$order): void {
+                $order[] = 'field notified';
+            }
+        );
+
+        $this->strategy()->write($this->entry(self::SENDER_EMAIL_PATH), self::STORE_ID, 'orders@example.com');
+
+        self::assertSame(['row written', 'field notified'], $order);
+    }
+
+    /**
+     * The change happened. Reporting it as a refusal would leave the administrator believing the old
+     * value is still in place while every message renders the new one, which is the one account of
+     * events worse than none.
+     *
+     * @return void
+     */
+    public function testAFailureOnceTheRowHasLandedIsNotReportedAsARefusal(): void
+    {
+        $this->fieldWhoseModelFailsAfterTheSave();
+
+        $this->configResource->expects(self::once())->method('saveConfig');
+
+        $this->strategy()->write($this->entry(self::SENDER_EMAIL_PATH), self::STORE_ID, 'orders@example.com');
+    }
+
+    /**
+     * What the administrator gets instead: the change stated as having happened, and what did not
+     * happen stated beside it in terms they can do something about.
+     *
+     * @return void
+     */
+    public function testAFailureOnceTheRowHasLandedIsReportedAsACompletedWriteWithAWarning(): void
+    {
+        $this->fieldWhoseModelFailsAfterTheSave();
+
+        $warnings = [];
+        $this->messageManager->method('addWarningMessage')->willReturnCallback(
+            static function (string $message) use (&$warnings): void {
+                $warnings[] = $message;
+            }
+        );
+
+        $this->strategy()->write($this->entry(self::SENDER_EMAIL_PATH), self::STORE_ID, 'orders@example.com');
+
+        self::assertCount(1, $warnings);
+        self::assertStringContainsString(self::SENDER_EMAIL_PATH, $warnings[0]);
+        self::assertStringContainsString('was saved', $warnings[0]);
+        self::assertStringContainsString('configuration page', $warnings[0]);
+    }
+
+    /**
+     * Whoever has to work out what was left undone needs the three things that identify it: which
+     * value, in which scope, and whose step it was.
+     *
+     * @return void
+     */
+    public function testAFailureOnceTheRowHasLandedIsLoggedWithThePathTheScopeAndTheModel(): void
+    {
+        $prepared = $this->fieldWhoseModelFailsAfterTheSave();
+
+        $this->captureLoggedFailures();
+
+        $this->strategy()->write($this->entry(self::SENDER_EMAIL_PATH), self::STORE_ID, 'orders@example.com');
+
+        self::assertCount(1, $this->loggedFailures);
+        self::assertStringContainsString(self::SENDER_EMAIL_PATH, $this->loggedFailures[0]);
+        self::assertStringContainsString('stores', $this->loggedFailures[0]);
+        self::assertStringContainsString((string)self::STORE_ID, $this->loggedFailures[0]);
+        self::assertStringContainsString(get_debug_type($prepared), $this->loggedFailures[0]);
+        self::assertStringContainsString('The identity cache could not be rebuilt.', $this->loggedFailures[0]);
+    }
+
+    /**
+     * The invalidation is done here rather than left to the field's own step precisely so that it
+     * cannot be lost with that step. A model that throws halfway through its own after-save never
+     * reaches the invalidation inside it, and a stale cache makes a change that did happen read as
+     * one that did nothing.
+     *
+     * @return void
+     */
+    public function testTheConfigurationCacheIsMarkedForRefreshEvenWhenTheFieldsOwnStepFails(): void
+    {
+        $this->fieldWhoseModelFailsAfterTheSave();
+
+        $this->cacheTypeList->expects(self::once())->method('invalidate')->with('config');
+
+        $this->strategy()->write($this->entry(self::SENDER_EMAIL_PATH), self::STORE_ID, 'orders@example.com');
+    }
+
+    /**
+     * The trail records the change, which happened, whatever went wrong after it.
+     *
+     * @return void
+     */
+    public function testTheChangeIsStillRecordedWhenTheFieldsOwnStepFails(): void
+    {
+        $this->fieldWhoseModelFailsAfterTheSave();
+
+        $this->logger->expects(self::once())
+            ->method('info')
+            ->with(self::stringContains(self::SENDER_EMAIL_PATH));
+
+        $this->strategy()->write($this->entry(self::SENDER_EMAIL_PATH), self::STORE_ID, 'orders@example.com');
+    }
+
+    /**
+     * Telling the administrator may itself fail, and a session that cannot take a warning must not
+     * become the reason they are told their change was rejected. The log keeps both facts.
+     *
+     * @return void
+     */
+    public function testAWarningThatCannotBeQueuedStillLeavesTheWriteReportedAsDone(): void
+    {
+        $this->fieldWhoseModelFailsAfterTheSave();
+        $this->messageManager->method('addWarningMessage')->willThrowException(
+            new PhpRuntimeException('There is no session to put a message in.')
+        );
+
+        $this->captureLoggedFailures();
+
+        $this->strategy()->write($this->entry(self::SENDER_EMAIL_PATH), self::STORE_ID, 'orders@example.com');
+
+        self::assertCount(2, $this->loggedFailures);
+        self::assertStringContainsString('did not finish', $this->loggedFailures[0]);
+        self::assertStringContainsString('could not be warned', $this->loggedFailures[1]);
+        self::assertStringContainsString(
+            'There is no session to put a message in.',
+            $this->loggedFailures[1]
+        );
+    }
+
+    /**
+     * A field the structure gives no lifecycle model for is written as asked and has nothing run
+     * after it, which is not a failure and is not warned about.
+     *
+     * @return void
+     */
+    public function testAPreparedValueOutsideTheSaveLifecycleIsWrittenAsAskedWithNothingRunAfterIt(): void
+    {
+        $this->structureAnswers([self::NAME_PATH => $this->field(['label' => 'Store Name', 'store' => true])]);
+        $this->preparedValueFactory->method('create')->willReturn($this->createMock(ValueInterface::class));
+
+        $this->configResource->expects(self::once())
+            ->method('saveConfig')
+            ->with(self::NAME_PATH, 'Acme Ltd', 'stores', self::STORE_ID);
+        $this->cacheTypeList->expects(self::once())->method('invalidate')->with('config');
+        $this->messageManager->expects(self::never())->method('addWarningMessage');
+        $this->logger->expects(self::never())->method('error');
+
+        $this->strategy()->write($this->entry(self::NAME_PATH), self::STORE_ID, 'Acme Ltd');
     }
 
     /**
@@ -424,14 +608,69 @@ class ConfigValueWriteStrategyTest extends TestCase
             $this->configResource,
             $this->cacheTypeList,
             $this->authSession,
-            $this->logger
+            $this->logger,
+            $this->messageManager
+        );
+    }
+
+    /**
+     * A writable field whose own model takes part in the save lifecycle, and that model
+     *
+     * @return Value&MockObject
+     */
+    private function fieldWhoseModelTakesPartInTheSave(): Value
+    {
+        $this->structureAnswers([
+            self::SENDER_EMAIL_PATH => $this->field([
+                'label' => 'Sender Email',
+                'store' => true,
+                'backendModel' => $this->createMock(Value::class),
+            ]),
+        ]);
+
+        $prepared = $this->preparedValue(self::SENDER_EMAIL_PATH, 'orders@example.com');
+        $this->preparedValueFactory->method('create')->willReturn($prepared);
+
+        return $prepared;
+    }
+
+    /**
+     * The same field, with its model throwing at the one point where the row has already landed
+     *
+     * The failure is a plain runtime one rather than a localised one on purpose: what a backend
+     * model throws after a save is not addressed to an administrator, and it must not become the
+     * message an administrator is shown in place of the change they made.
+     *
+     * @return Value&MockObject
+     */
+    private function fieldWhoseModelFailsAfterTheSave(): Value
+    {
+        $prepared = $this->fieldWhoseModelTakesPartInTheSave();
+        $prepared->method('afterSave')->willThrowException(
+            new PhpRuntimeException('The identity cache could not be rebuilt.')
+        );
+
+        return $prepared;
+    }
+
+    /**
+     * Start collecting the messages the strategy logs as failures, in the order it logs them
+     *
+     * @return void
+     */
+    private function captureLoggedFailures(): void
+    {
+        $this->logger->method('error')->willReturnCallback(
+            function (string $message): void {
+                $this->loggedFailures[] = $message;
+            }
         );
     }
 
     /**
      * A prepared value carrying the path and value a backend model settled on
      *
-     * The model is built without its constructor and only its lifecycle hook is replaced, so that
+     * The model is built without its constructor and only its lifecycle hooks are replaced, so that
      * reading a path and a value off it goes through the same accessors the real one uses.
      *
      * @param string $path Path the model reports
@@ -442,7 +681,7 @@ class ConfigValueWriteStrategyTest extends TestCase
     {
         $prepared = $this->getMockBuilder(Value::class)
             ->disableOriginalConstructor()
-            ->onlyMethods(['beforeSave'])
+            ->onlyMethods(['beforeSave', 'afterSave'])
             ->getMock();
         $prepared->setPath($path);
         $prepared->setValue($value);

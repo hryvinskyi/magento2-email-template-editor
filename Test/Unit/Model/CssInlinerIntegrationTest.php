@@ -12,6 +12,8 @@ namespace Hryvinskyi\EmailTemplateEditor\Test\Unit\Model;
 use Hryvinskyi\EmailTemplateEditor\Model\CssColorConverter;
 use Hryvinskyi\EmailTemplateEditor\Model\Color\ColorMixer;
 use Hryvinskyi\EmailTemplateEditor\Model\Color\ColorParser;
+use Hryvinskyi\EmailTemplateEditor\Model\Css\CssStructureParser;
+use Hryvinskyi\EmailTemplateEditor\Model\Css\CssSyntaxScanner;
 use Hryvinskyi\EmailTemplateEditor\Model\CssImportantPromoter;
 use Hryvinskyi\EmailTemplateEditor\Model\CssInliner;
 use Hryvinskyi\EmailTemplateEditor\Model\CssLayerFlattener;
@@ -44,12 +46,19 @@ class CssInlinerIntegrationTest extends TestCase
             self::markTestSkipped('Pelago\Emogrifier is not available in the test environment.');
         }
 
-        $this->generator = new UtilityCssGenerator();
+        $syntaxScanner = new CssSyntaxScanner();
+        $structureParser = new CssStructureParser($syntaxScanner);
+
+        $this->generator = new UtilityCssGenerator(new CssStructureParser(new CssSyntaxScanner()), new CssSyntaxScanner());
         $this->inliner = new CssInliner(
-            new CssVariableResolver(new CssColorConverter(new ColorParser(), new ColorMixer())),
+            new CssVariableResolver(
+                new CssColorConverter(new ColorParser(), new ColorMixer()),
+                $structureParser,
+                $syntaxScanner
+            ),
             new NullLogger(),
-            new CssLayerFlattener(),
-            new CssImportantPromoter()
+            new CssLayerFlattener($structureParser),
+            new CssImportantPromoter($structureParser)
         );
     }
 
@@ -456,5 +465,138 @@ CSS;
 
         self::assertMatchesRegularExpression('/style="[^"]*background-color:\s*#131CCF/i', $out);
         self::assertMatchesRegularExpression('/style="[^"]*margin-bottom:\s*calc\(\.25rem\s*\*\s*11\)/i', $out);
+    }
+
+    // ---------------------------------------------------------------------------------------
+    //  Custom-property scope, end to end. A `var()` is only replaceable by a literal if the
+    //  replacement is the one the recipient's client would have computed for that element.
+    // ---------------------------------------------------------------------------------------
+
+    /**
+     * An email is inlined once and delivered to everyone, so the only rendering it can express
+     * is the unconditional one. A `--color-*` override under `prefers-color-scheme: dark`
+     * describes a rendering this message will never have; if it reaches the rules outside the
+     * media query, every recipient - on a light client too - receives the dark palette.
+     */
+    public function testDarkModeVariableOverrideDoesNotReachTheInlinedStyles(): void
+    {
+        $css = <<<'CSS'
+@layer theme {
+  :root, :host { --color-bg: #ffffff; }
+}
+@layer utilities {
+  .card { background-color: var(--color-bg); }
+}
+@media (prefers-color-scheme: dark) {
+  :root, :host { --color-bg: #000000; }
+}
+CSS;
+        $html = '<table><tr><td class="card">x</td></tr></table>';
+        $out = $this->inliner->inline($html, null, $css);
+
+        // Emogrifier's CSS parser normalises #ffffff down to its short form.
+        self::assertMatchesRegularExpression(
+            '/<td[^>]*style="[^"]*background-color:\s*#(?:fff|ffffff)\b/i',
+            $out
+        );
+        self::assertDoesNotMatchRegularExpression('/background-color:\s*#(?:000|000000)\b/i', $out);
+    }
+
+    /**
+     * A `data:` URI held in a custom property carries a semicolon inside its value. Cutting
+     * the declaration there both truncates the URI and leaves its tail standing in the block
+     * as a fragment, which costs the element every declaration in that rule - here the colour
+     * too, not only the image that was truncated.
+     */
+    public function testDataUriHeldInACustomPropertyIsInlinedWhole(): void
+    {
+        $custom = <<<'CSS'
+.logo {
+  --logo-image: url("data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=");
+  background-image: var(--logo-image);
+  color: #336699;
+}
+CSS;
+        $html = '<div class="logo">x</div>';
+        $out = $this->inliner->inline($html, $custom);
+
+        self::assertStringContainsString(
+            'background-image: url("data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=")',
+            $out
+        );
+        // Emogrifier's CSS parser normalises #336699 down to its short form.
+        self::assertMatchesRegularExpression('/<div[^>]*style=[^>]*color:\s*#(?:369|336699)\b/i', $out);
+    }
+
+    /**
+     * Tailwind v4 routes every `border-*` utility through one `--tw-border-style` slot, and
+     * `.border-dashed` is simply the rule that sets it. Resolving that slot per stylesheet
+     * rather than per rule makes the presence of `.border-dashed` anywhere in the email turn
+     * every other bordered element dashed as well.
+     */
+    public function testBorderStyleSlotIsResolvedPerRuleNotPerStylesheet(): void
+    {
+        $css = <<<'CSS'
+@layer utilities {
+  .border-2 { border-style: var(--tw-border-style); border-width: 2px; }
+  .border-dashed { --tw-border-style: dashed; border-style: var(--tw-border-style); }
+}
+@property --tw-border-style {
+  syntax: "*";
+  inherits: false;
+  initial-value: solid;
+}
+CSS;
+        $html = '<table><tr><td class="border-2">a</td><td class="border-dashed">b</td></tr></table>';
+        $out = $this->inliner->inline($html, null, $css);
+
+        self::assertMatchesRegularExpression(
+            '/<td class="border-2"[^>]*style="[^"]*border-style:\s*solid/i',
+            $out
+        );
+        self::assertMatchesRegularExpression(
+            '/<td class="border-dashed"[^>]*style="[^"]*border-style:\s*dashed/i',
+            $out
+        );
+    }
+
+    /**
+     * A brace inside a `content` string is not a block boundary. Counting it as one leaves the
+     * `@layer` wrapper standing, and Emogrifier drops every rule still wrapped in a layer - so
+     * one decorative pseudo-element strips the whole utility stylesheet out of the email.
+     */
+    public function testBraceInsideAContentStringDoesNotCostTheStylesheetItsOtherRules(): void
+    {
+        $css = <<<'CSS'
+@layer utilities {
+  .marker::before { content: "{"; }
+  .after { color: #a10c0c; }
+}
+CSS;
+        $html = '<div class="marker">a</div><div class="after">b</div>';
+        $out = $this->inliner->inline($html, null, $css);
+
+        self::assertMatchesRegularExpression('/<div class="after"[^>]*style="[^"]*color:\s*#a10c0c/i', $out);
+    }
+
+    /**
+     * Custom CSS is pasted, and pasted bytes are not always valid UTF-8. A pattern that
+     * refuses to run on such a subject reports no result, and a `<style>` block rewritten from
+     * that result is empty - the rules the block carried for media queries and pseudo-elements,
+     * which no inliner can express as a `style` attribute in the first place, are simply gone
+     * from the delivered email with nothing to say why. Passing the block through untouched
+     * leaves those rules where the client can still read them.
+     */
+    public function testInvalidUtf8ByteInAStyleBlockDoesNotEmptyThatBlock(): void
+    {
+        $html = "<style type=\"text/css\">@media (max-width: 600px)"
+            . " { .x { content: \"\xB1\xC3\"; color: #a10c0c; } }</style>\n<div class=\"x\">a</div>";
+
+        self::assertFalse(mb_check_encoding($html, 'UTF-8'), 'The fixture must not be valid UTF-8');
+
+        $out = $this->inliner->inline($html);
+
+        self::assertStringContainsString('@media (max-width: 600px)', $out);
+        self::assertStringContainsString('color: #a10c0c', $out);
     }
 }

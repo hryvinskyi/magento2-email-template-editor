@@ -690,4 +690,16 @@
     -->
     <preference for="Hryvinskyi\EmailTemplateEditor\Api\Knowledge\KnowledgeSerializerInterface"
                 type="Hryvinskyi\EmailTemplateEditor\Model\Knowledge\KnowledgeSerializer"/>
+
+    <!--
+        The single reader every stage of the CSS inlining pipeline uses to find where a block, a
+        declaration or a function call ends. Braces, semicolons and parentheses all occur inside
+        strings, comments and `url()` tokens where they mean nothing structural, so each stage
+        answering that question with its own pattern is how a `content: "}"` or a
+        `url(data:…;base64,…)` silently reshapes the stylesheet that gets sent.
+    -->
+    <preference for="Hryvinskyi\EmailTemplateEditor\Api\Css\CssSyntaxScannerInterface"
+                type="Hryvinskyi\EmailTemplateEditor\Model\Css\CssSyntaxScanner"/>
+    <preference for="Hryvinskyi\EmailTemplateEditor\Api\Css\CssStructureParserInterface"
+                type="Hryvinskyi\EmailTemplateEditor\Model\Css\CssStructureParser"/>
 </config>
