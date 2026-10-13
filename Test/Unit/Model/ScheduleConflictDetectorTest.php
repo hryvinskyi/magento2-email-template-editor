@@ -21,7 +21,14 @@ class ScheduleConflictDetectorTest extends TestCase
     private const IDENTIFIER = 'sales_email_order_template';
     private const STORE_ID = 3;
 
+    /**
+     * @var MockObject
+     */
     private MockObject $collectionFactory;
+
+    /**
+     * @var ScheduleConflictDetector
+     */
     private ScheduleConflictDetector $detector;
 
     /**
@@ -52,7 +59,7 @@ class ScheduleConflictDetectorTest extends TestCase
     /**
      * @return array<string, array{0: string|null, 1: string|null, 2: string|null, 3: string|null, 4: bool}>
      */
-    public function windowPairProvider(): array
+    public static function windowPairProvider(): array
     {
         return [
             'closed windows that overlap' =>
@@ -121,7 +128,7 @@ class ScheduleConflictDetectorTest extends TestCase
     /**
      * @return array<string, array{0: string|null, 1: string|null}>
      */
-    public function undatedExistingRowProvider(): array
+    public static function undatedExistingRowProvider(): array
     {
         return [
             'both columns unset' => [null, null],
@@ -255,8 +262,9 @@ class ScheduleConflictDetectorTest extends TestCase
      * compiled does not exist at all and only addMethods() can declare it. A clean recompile
      * flips which case applies, so the branch is picked at runtime.
      *
-     * @param class-string $factoryClass
-     * @return MockObject
+     * @template T of object
+     * @param class-string<T> $factoryClass
+     * @return T&MockObject
      */
     private function mockFactory(string $factoryClass): MockObject
     {

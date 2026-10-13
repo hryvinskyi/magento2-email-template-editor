@@ -17,7 +17,7 @@
  * `this._super()` called with no arguments passes on the arguments its caller received - which is
  * the only reason a configuration reaches a component whose own initialize takes none. It does not
  * evaluate string templates in the configuration, it does not link, and its `observe` only
- * understands a list of names.
+ * understands a list of names or a map of names to initial values.
  *
  * The request stand-in is a deferred that never touches a network. It is settled by the test, in
  * the order the test chooses, which is the whole point: the questions worth asking here are about
@@ -174,7 +174,17 @@ function createComponentClass(ko) {
          */
         observe: function (properties) {
             var self = this,
+                names;
+
+            // The platform also takes a map of names to initial values.
+            if (properties !== null && typeof properties === 'object' && !isArray(properties)) {
+                Object.keys(properties).forEach(function (name) {
+                    self[name] = properties[name];
+                });
+                names = Object.keys(properties);
+            } else {
                 names = isArray(properties) ? properties : String(properties).split(' ');
+            }
 
             names.forEach(function (name) {
                 if (typeof self[name] === 'function' && typeof self[name].subscribe === 'function') {

@@ -34,7 +34,14 @@ class TemplateOverrideRepositoryTest extends TestCase
     private const FUTURE = '2026-06-30 23:59:59';
     private const FAR_FUTURE = '2026-12-24 00:00:00';
 
+    /**
+     * @var MockObject
+     */
     private MockObject $collectionFactory;
+
+    /**
+     * @var TemplateOverrideRepository
+     */
     private TemplateOverrideRepository $repository;
 
     /**
@@ -62,7 +69,7 @@ class TemplateOverrideRepositoryTest extends TestCase
     /**
      * @return array<string, array{0: string[], 1: int[]}>
      */
-    public function emptyInputProvider(): array
+    public static function emptyInputProvider(): array
     {
         return [
             'no identifiers' => [[], [0]],
@@ -144,6 +151,10 @@ class TemplateOverrideRepositoryTest extends TestCase
         $selected = [];
         $collection = $this->createMock(Collection::class);
         $collection->method('addFieldToSelect')->willReturnCallback(
+            /**
+             * @param string[] $fields
+             * @return void
+             */
             static function (array $fields) use (&$selected): void {
                 $selected = $fields;
             }
@@ -158,17 +169,18 @@ class TemplateOverrideRepositoryTest extends TestCase
             [TemplateOverrideInterface::DRAFT_NAME]
         );
 
+        $selected = array_map(static fn (mixed $field): string => is_string($field) ? $field : '', $selected);
         self::assertContains(TemplateOverrideInterface::DRAFT_NAME, $selected);
 
-        foreach (
-            [
-                TemplateOverrideInterface::ENTITY_ID,
-                TemplateOverrideInterface::TEMPLATE_IDENTIFIER,
-                TemplateOverrideInterface::STORE_ID,
-                TemplateOverrideInterface::STATUS,
-                TemplateOverrideInterface::IS_ACTIVE,
-            ] as $field
-        ) {
+        $mandatory = [
+            TemplateOverrideInterface::ENTITY_ID,
+            TemplateOverrideInterface::TEMPLATE_IDENTIFIER,
+            TemplateOverrideInterface::STORE_ID,
+            TemplateOverrideInterface::STATUS,
+            TemplateOverrideInterface::IS_ACTIVE,
+        ];
+
+        foreach ($mandatory as $field) {
             self::assertContains(
                 $field,
                 $selected,
@@ -197,7 +209,7 @@ class TemplateOverrideRepositoryTest extends TestCase
     /**
      * @return array<string, array{0: string|null, 1: string|null, 2: bool}>
      */
-    public function windowShapeProvider(): array
+    public static function windowShapeProvider(): array
     {
         return [
             'both bounds, now inside the window' => [self::PAST, self::FUTURE, true],
@@ -330,7 +342,7 @@ class TemplateOverrideRepositoryTest extends TestCase
     /**
      * @return array<string, array{0: string}>
      */
-    public function nonPublishedStatusProvider(): array
+    public static function nonPublishedStatusProvider(): array
     {
         return [
             'draft' => [TemplateOverrideInterface::STATUS_DRAFT],
@@ -360,7 +372,7 @@ class TemplateOverrideRepositoryTest extends TestCase
     /**
      * @return array<string, array{0: array<string, mixed>}>
      */
-    public function foreignRowProvider(): array
+    public static function foreignRowProvider(): array
     {
         return [
             'another template' => [[TemplateOverrideInterface::TEMPLATE_IDENTIFIER => 'other_template']],
@@ -514,7 +526,7 @@ class TemplateOverrideRepositoryTest extends TestCase
     /**
      * @return array<string, array{0: string}>
      */
-    public function singleRowLookupProvider(): array
+    public static function singleRowLookupProvider(): array
     {
         return [
             'the live undated row' => ['getImmediatePublished'],
@@ -608,6 +620,11 @@ class TemplateOverrideRepositoryTest extends TestCase
         $collection = $this->createMock(Collection::class);
 
         $collection->method('addFieldToFilter')->willReturnCallback(
+            /**
+             * @param string|string[] $field
+             * @param mixed $condition
+             * @return void
+             */
             function ($field, $condition = null) use (&$rows): void {
                 $fields = is_array($field) ? array_values($field) : [$field];
                 $conditions = is_array($field) ? array_values((array)$condition) : [$condition];
@@ -617,7 +634,9 @@ class TemplateOverrideRepositoryTest extends TestCase
                         $rows,
                         function (array $row) use ($fields, $conditions): bool {
                             foreach ($fields as $index => $name) {
-                                if ($this->satisfies($row[$name] ?? null, $conditions[$index] ?? null)) {
+                                if (is_string($name)
+                                    && $this->satisfies($row[$name] ?? null, $conditions[$index] ?? null)
+                                ) {
                                     return true;
                                 }
                             }
@@ -670,7 +689,7 @@ class TemplateOverrideRepositoryTest extends TestCase
         foreach (['addFieldToFilter', 'setOrder', 'setPageSize'] as $method) {
             $collection->method($method)->willReturnCallback(
                 static function (...$arguments) use (&$calls, $method): void {
-                    $calls[] = array_merge([$method], $arguments);
+                    $calls[] = [$method, ...$arguments];
                 }
             );
         }
@@ -723,7 +742,7 @@ class TemplateOverrideRepositoryTest extends TestCase
     private function satisfies($value, $condition): bool
     {
         if (!is_array($condition)) {
-            return $value !== null && (string)$value === (string)$condition;
+            return $value !== null && $this->text($value) === $this->text($condition);
         }
 
         if (array_key_exists('null', $condition)) {
@@ -735,16 +754,36 @@ class TemplateOverrideRepositoryTest extends TestCase
         }
 
         if (array_key_exists('lteq', $condition)) {
-            return $value !== null && (string)$value <= (string)$condition['lteq'];
+            return $value !== null && $this->text($value) <= $this->text($condition['lteq']);
         }
 
         if (array_key_exists('gteq', $condition)) {
-            return $value !== null && (string)$value >= (string)$condition['gteq'];
+            return $value !== null && $this->text($value) >= $this->text($condition['gteq']);
         }
 
         throw new \LogicException(
             'The collection double answers no such condition: ' . json_encode($condition)
         );
+    }
+
+    /**
+     * A column value or condition operand as the text the database would compare
+     *
+     * @param mixed $value
+     * @return string
+     * @throws \LogicException When the value is not one a column holds
+     */
+    private function text(mixed $value): string
+    {
+        if ($value === null) {
+            return '';
+        }
+
+        if (!is_scalar($value)) {
+            throw new \LogicException('The collection double compares only scalar column values.');
+        }
+
+        return (string)$value;
     }
 
     /**
@@ -780,8 +819,8 @@ class TemplateOverrideRepositoryTest extends TestCase
         $entity->method('getActiveFrom')->willReturn($row[TemplateOverrideInterface::ACTIVE_FROM] ?? null);
         $entity->method('getActiveTo')->willReturn($row[TemplateOverrideInterface::ACTIVE_TO] ?? null);
         $entity->method('getIsActive')->willReturn((bool)($row[TemplateOverrideInterface::IS_ACTIVE] ?? false));
-        $entity->method('getStatus')->willReturn((string)($row[TemplateOverrideInterface::STATUS] ?? ''));
-        $entity->method('getStoreId')->willReturn((int)($row[TemplateOverrideInterface::STORE_ID] ?? 0));
+        $entity->method('getStatus')->willReturn($this->text($row[TemplateOverrideInterface::STATUS] ?? ''));
+        $entity->method('getStoreId')->willReturn((int)$this->text($row[TemplateOverrideInterface::STORE_ID] ?? 0));
 
         return $entity;
     }
@@ -810,8 +849,9 @@ class TemplateOverrideRepositoryTest extends TestCase
      * compiled does not exist at all and only addMethods() can declare it. A clean recompile
      * flips which case applies, so the branch is picked at runtime.
      *
-     * @param class-string $factoryClass
-     * @return MockObject
+     * @template T of object
+     * @param class-string<T> $factoryClass
+     * @return T&MockObject
      */
     private function mockFactory(string $factoryClass): MockObject
     {

@@ -28,8 +28,14 @@ class ConfigPathReadabilityTest extends TestCase
         'general/store_information/name',
     ];
 
-    private ConfigVariables&MockObject $configVariables;
+    /**
+     * @var ConfigVariables&MockObject
+     */
+    private MockObject $configVariables;
 
+    /**
+     * @var ConfigPathReadability
+     */
     private ConfigPathReadability $readability;
 
     /**
@@ -57,7 +63,7 @@ class ConfigPathReadabilityTest extends TestCase
     /**
      * @return array<string, array{string}>
      */
-    public function readablePathProvider(): array
+    public static function readablePathProvider(): array
     {
         return [
             'a base URL' => ['web/unsecure/base_url'],

@@ -10,10 +10,8 @@ declare(strict_types=1);
 namespace Hryvinskyi\EmailTemplateEditor\Plugin;
 
 use Hryvinskyi\EmailTemplateEditor\Api\ConfigInterface;
-use Hryvinskyi\EmailTemplateEditor\Api\CssImportantPromoterInterface;
+use Hryvinskyi\EmailTemplateEditor\Api\Css\EmailStylesheetCollectorInterface;
 use Hryvinskyi\EmailTemplateEditor\Api\CssInlinerInterface;
-use Hryvinskyi\EmailTemplateEditor\Api\CssLayerFlattenerInterface;
-use Hryvinskyi\EmailTemplateEditor\Api\CssVariableResolverInterface;
 use Hryvinskyi\EmailTemplateEditor\Api\Data\TemplateOverrideInterface;
 use Hryvinskyi\EmailTemplateEditor\Api\EditorContextFlagInterface;
 use Hryvinskyi\EmailTemplateEditor\Api\PluginBypassFlagInterface;
@@ -29,27 +27,18 @@ use Psr\Log\LoggerInterface;
 class EmailTemplatePlugin implements ResetAfterRequestInterface
 {
     /**
-     * Override CSS waiting to be embedded, keyed by the template object it belongs to
-     *
-     * Keyed by the object rather than by spl_object_id(): PHP recycles object handles once an
-     * object is collected, so an entry left behind by a template that was loaded but never
-     * processed could be picked up by an unrelated template and put one override's CSS onto
-     * another's markup. A WeakMap key cannot collide, and the entry disappears with the
-     * template instead of accumulating.
-     *
-     * @var \WeakMap<AbstractTemplate, string>
-     */
-    private \WeakMap $pendingCssMap;
-
-    /**
-     * Overrides already resolved during this request, keyed by "templateId|storeId|themeCode"
+     * Overrides already resolved during the current email, keyed by "templateId|storeId|themeCode"
      *
      * A null value is a cached "there is no override", so a template without one does not repeat
      * the lookup on every include. The theme code belongs in the key because it decides which
      * identifiers are searched, so the same template rendered under two themes must not share an
      * entry.
      *
-     * @var array<string, TemplateOverrideInterface|null>
+     * Emptied whenever an outermost render finishes. A cron run or a queue consumer sends many
+     * messages from one long-lived process, and an answer kept past the email it was looked up for
+     * would go on applying an override after it was replaced, switched off or its window closed.
+     *
+     * @var array<string,TemplateOverrideInterface|null>
      */
     private array $resolvedOverrides = [];
 
@@ -63,9 +52,7 @@ class EmailTemplatePlugin implements ResetAfterRequestInterface
      * @param LoggerInterface $logger
      * @param PluginBypassFlagInterface $pluginBypassFlag
      * @param EditorContextFlagInterface $editorContextFlag
-     * @param CssVariableResolverInterface $cssVariableResolver
-     * @param CssLayerFlattenerInterface $layerFlattener
-     * @param CssImportantPromoterInterface $importantPromoter
+     * @param EmailStylesheetCollectorInterface $stylesheets
      * @param TimezoneInterface $timezone
      */
     public function __construct(
@@ -78,12 +65,9 @@ class EmailTemplatePlugin implements ResetAfterRequestInterface
         private readonly LoggerInterface $logger,
         private readonly PluginBypassFlagInterface $pluginBypassFlag,
         private readonly EditorContextFlagInterface $editorContextFlag,
-        private readonly CssVariableResolverInterface $cssVariableResolver,
-        private readonly CssLayerFlattenerInterface $layerFlattener,
-        private readonly CssImportantPromoterInterface $importantPromoter,
+        private readonly EmailStylesheetCollectorInterface $stylesheets,
         private readonly TimezoneInterface $timezone
     ) {
-        $this->pendingCssMap = new \WeakMap();
     }
 
     /**
@@ -93,7 +77,7 @@ class EmailTemplatePlugin implements ResetAfterRequestInterface
      * @param AbstractTemplate $result
      * @param string $templateId
      * @return AbstractTemplate
-     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+     * @SuppressWarnings("PHPMD.UnusedFormalParameter")
      */
     public function afterLoadDefault(
         AbstractTemplate $subject,
@@ -134,12 +118,12 @@ class EmailTemplatePlugin implements ResetAfterRequestInterface
         // orig_template_code (a wholly custom template_code) gets seeded into a
         // managed override under its template_code, so the overlay must look it
         // up by that same key for the runtime substitution to fire.
-        $identifier = (string)($subject->getOrigTemplateCode() ?? '');
-        if ($identifier === '') {
-            $identifier = (string)($subject->getTemplateCode() ?? '');
+        $identifier = $subject->getData('orig_template_code');
+        if (!is_string($identifier) || $identifier === '') {
+            $identifier = $subject->getData('template_code');
         }
 
-        if ($identifier === '') {
+        if (!is_string($identifier) || $identifier === '') {
             return $result;
         }
 
@@ -185,10 +169,12 @@ class EmailTemplatePlugin implements ResetAfterRequestInterface
                 $result->setTemplateSubject($override->getTemplateSubject());
             }
 
-            $combinedCss = $this->buildCombinedCss($override, $storeId);
-            if ($combinedCss !== '') {
-                $this->pendingCssMap[$result] = $combinedCss;
-            }
+            $this->stylesheets->assign(
+                $result,
+                $this->resolveThemeCss($override, $storeId),
+                (string)$override->getTailwindCss(),
+                (string)$override->getCustomCss()
+            );
         } catch (\Exception $e) {
             $this->logger->error(
                 'EmailTemplateEditor plugin error for template "' . $templateId . '": ' . $e->getMessage()
@@ -197,75 +183,52 @@ class EmailTemplatePlugin implements ResetAfterRequestInterface
     }
 
     /**
-     * After processing the template, embed the override CSS as a style block
+     * Render the template inside its own stylesheet scope, and inline the email's CSS once it is whole
      *
-     * The CSS is injected as a <style> element rather than inlined here, because the
-     * processed result may be an included fragment (e.g. a header that opens the document
-     * for the footer to close). Running a separate inliner on such a fragment would force a
-     * complete document and orphan everything that follows it. Embedding a <style> block lets
-     * the single top-level inliner - the parent email's {{inlinecss}} on a real send, or the
-     * editor's renderer in preview - apply it to the fully assembled document instead.
+     * Every template collects what the templates it includes hand up, adds its own sheet and passes
+     * the lot to whatever includes it in turn. Only the outermost render - the email being sent, or
+     * the one the editor previews - inlines, and it does so into the finished document. A header
+     * opens a document the footer closes, so CSS inlined into either alone would be inlined into a
+     * document the parser had to invent, and a style block left inside one stays where the core
+     * filter's own inlining pass deliberately never looks, reaching only the clients that honour a
+     * style block in the body.
+     *
+     * The core filter has already inlined the theme's email-inline.css by then, and that pass leaves
+     * an inline style attribute that would otherwise have the last word; the inliner promotes the
+     * editor's CSS so that it wins, and the theme's own style blocks are left exactly as the core
+     * left them. A plain-text email carries no markup to style and is returned as it was rendered.
      *
      * @param AbstractTemplate $subject
-     * @param string $result
+     * @param callable(array<string,mixed>):string $proceed
+     * @param array<string,mixed> $variables
      * @return string
-     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
      */
-    public function afterGetProcessedTemplate(AbstractTemplate $subject, string $result): string
-    {
-        if (!isset($this->pendingCssMap[$subject])) {
-            return $result;
+    public function aroundGetProcessedTemplate(
+        AbstractTemplate $subject,
+        callable $proceed,
+        array $variables = []
+    ): string {
+        if ($this->pluginBypassFlag->isBypassed()) {
+            return $proceed($variables);
         }
 
-        $css = $this->pendingCssMap[$subject];
-        unset($this->pendingCssMap[$subject]);
+        $this->stylesheets->begin();
 
         try {
-            // Flatten Tailwind `@layer` wrappers BEFORE resolving and embedding. Otherwise the
-            // override's stored tailwind_css (compiled by v4 with `.invert` etc. wrapped in
-            // `@layer utilities {...}`) would land in the processed sub-template as a <style>
-            // block that Emogrifier silently ignores, leaving the override classes unstyled
-            // in any parent email that includes this template via {{template config_path=...}}.
-            $resolvedCss = trim(
-                $this->cssVariableResolver->resolve($this->layerFlattener->flatten($css))
-            );
-            if ($resolvedCss === '') {
-                return $result;
+            $html = $proceed($variables);
+        } finally {
+            $sheet = $this->stylesheets->end($subject);
+
+            if ($sheet !== null) {
+                $this->resolvedOverrides = [];
             }
-
-            // Whoever inlines the assembled document does so *after* Magento's own
-            // {{inlinecss}} pass has already written css/email-inline.css into `style="…"`
-            // attributes, and Emogrifier gives those pre-existing attributes the last word
-            // unless the competing declaration is !important. Without this an override class
-            // on an included header/footer (e.g. `text-black` on a link) silently loses to
-            // the stock `a { color: … }` once the fragment is pulled into a parent template.
-            return $this->embedStyleBlock($result, $this->importantPromoter->promote($resolvedCss));
-        } catch (\Exception $e) {
-            $this->logger->error('Failed to embed override CSS for email: ' . $e->getMessage());
-
-            return $result;
-        }
-    }
-
-    /**
-     * Insert a style block into processed template HTML
-     *
-     * Placed before </head> when present so it travels with the document head; otherwise
-     * prepended so it is still picked up by the downstream inliner.
-     *
-     * @param string $html
-     * @param string $css
-     * @return string
-     */
-    private function embedStyleBlock(string $html, string $css): string
-    {
-        $styleBlock = '<style type="text/css">' . "\n" . $css . "\n" . '</style>';
-
-        if (preg_match('#</head>#i', $html)) {
-            return (string)preg_replace('#</head>#i', $styleBlock . '$0', $html, 1);
         }
 
-        return $styleBlock . $html;
+        if ($sheet === null || $subject->isPlain()) {
+            return $html;
+        }
+
+        return $this->cssInliner->inline($html, $sheet['custom'], $sheet['utility'], $sheet['theme']);
     }
 
     /**
@@ -334,7 +297,7 @@ class EmailTemplatePlugin implements ResetAfterRequestInterface
      * default-scope windowed override beats a themed, store-specific undated one. Identifier comes
      * next, store last.
      *
-     * @param array<string, TemplateOverrideInterface[]> $candidates Rows grouped by identifier
+     * @param array<string,TemplateOverrideInterface[]> $candidates Rows grouped by identifier
      * @param string[] $identifiers Identifiers in descending priority
      * @param int[] $storeIds Store scopes in descending priority
      * @return TemplateOverrideInterface|null
@@ -382,7 +345,7 @@ class EmailTemplatePlugin implements ResetAfterRequestInterface
      *
      * @param TemplateOverrideInterface[] $candidates
      * @param int $storeId
-     * @param callable(TemplateOverrideInterface): bool $matchesWindow
+     * @param callable(TemplateOverrideInterface):bool $matchesWindow
      * @return TemplateOverrideInterface|null
      */
     private function lowestIdMatching(
@@ -489,59 +452,38 @@ class EmailTemplatePlugin implements ResetAfterRequestInterface
     }
 
     /**
-     * Build combined CSS from theme, tailwind, and custom CSS
+     * Generate the CSS of the theme an override was saved with, or of the store's default theme
      *
      * @param TemplateOverrideInterface $override
      * @param int $storeId
      * @return string
      */
-    private function buildCombinedCss(TemplateOverrideInterface $override, int $storeId): string
+    private function resolveThemeCss(TemplateOverrideInterface $override, int $storeId): string
     {
-        $parts = [];
-
-        $themeId = $override->getThemeId();
         try {
-            if ($themeId) {
-                $theme = $this->themeRepository->getById($themeId);
-                $themeCss = $this->cssGenerator->generate($theme->getThemeCss());
-            } else {
-                $defaultTheme = $this->themeRepository->getDefaultTheme($storeId);
-                $themeCss = $defaultTheme
-                    ? $this->cssGenerator->generate($defaultTheme->getThemeCss())
-                    : '';
-            }
-            if ($themeCss !== '') {
-                $parts[] = $themeCss;
-            }
+            $themeId = $override->getThemeId();
+            $theme = $themeId
+                ? $this->themeRepository->getById($themeId)
+                : $this->themeRepository->getDefaultTheme($storeId);
+
+            $themeJson = $theme?->getThemeCss();
+
+            return $themeJson !== null && $themeJson !== '' ? $this->cssGenerator->generate($themeJson) : '';
         } catch (\Exception $e) {
             $this->logger->warning('Failed to load theme CSS: ' . $e->getMessage());
-        }
 
-        $tailwindCss = $override->getTailwindCss();
-        if ($tailwindCss !== null && $tailwindCss !== '') {
-            $parts[] = $tailwindCss;
+            return '';
         }
-
-        $customCss = $override->getCustomCss();
-        if ($customCss !== null && $customCss !== '') {
-            $parts[] = $customCss;
-        }
-
-        return implode("\n", $parts);
     }
 
     /**
      * @inheritDoc
      *
-     * Both maps are per-request state on a shared singleton. The order-email cron sends a whole
-     * batch of messages in one PHP process, each loading its template through this plugin, so
-     * without this the resolved overrides of the first message would be reused for every
-     * following one and any CSS left pending by a template that was never processed would
-     * outlive the send it belonged to.
+     * The resolved overrides are per-email state on a shared singleton; an application server
+     * reuses the instance across requests.
      */
     public function _resetState(): void
     {
-        $this->pendingCssMap = new \WeakMap();
         $this->resolvedOverrides = [];
     }
 }

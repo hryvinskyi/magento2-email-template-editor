@@ -9,175 +9,267 @@ declare(strict_types=1);
 
 namespace Hryvinskyi\EmailTemplateEditor\Test\Unit\Model\Knowledge;
 
-use DOMDocument;
-use DOMXPath;
 use Hryvinskyi\EmailTemplateEditor\Api\Data\Knowledge\EditAffordanceInterface;
 use Hryvinskyi\EmailTemplateEditor\Api\Data\Knowledge\OriginInterface;
 use Hryvinskyi\EmailTemplateEditor\Api\Data\Knowledge\VariableKnowledgeInterface;
+use Hryvinskyi\EmailTemplateEditor\Api\Knowledge\VariableKnowledgeProviderInterface;
+use Hryvinskyi\EmailTemplateEditor\Model\Knowledge\Data\DirectiveReference;
 use Hryvinskyi\EmailTemplateEditor\Model\Knowledge\DirectiveReferenceParser;
-use LibXMLError;
+use Hryvinskyi\EmailTemplateEditor\Test\Unit\Container\ReadsEmailVariablesConfiguration;
+use Magento\Framework\Exception\LocalizedException;
 use PHPUnit\Framework\TestCase;
+use Psr\Log\LoggerInterface;
 use ReflectionClass;
 
 /**
- * Keeps the shipped knowledge file and its schema honest.
+ * What a module may write in an email_variables.xml, as an installation reads it.
  *
- * Two things are checked. The file this module ships really does satisfy the schema every
- * contribution is checked against - a schema nobody's own file obeys would be one nobody trusts. And
- * every enumeration in that schema still lists exactly what PHP publishes: a schema cannot read a
- * PHP constant, so the sets are written twice, and without this the two would drift until a
- * perfectly good contribution was refused for naming something the code has accepted all along.
+ * A schema cannot read a PHP constant, so every set the PHP side publishes - directive kinds, output
+ * kinds, origin kinds, affordance kinds, inline editor types - is stated a second time as an
+ * enumeration in the schema. Each value PHP publishes is therefore written into a contribution here
+ * and read through the module's reader and schema: one the schema has fallen behind on refuses a
+ * perfectly good contribution, and fails by name. A value nobody publishes is written as well, and
+ * has to be refused, so the schema is proved to enumerate at all.
  */
 class EmailVariablesSchemaTest extends TestCase
 {
-    /**
-     * Namespace prefix bound to the XML Schema namespace for the queries below
-     */
-    private const XSD_PREFIX = 'xs';
+    use ReadsEmailVariablesConfiguration;
 
     /**
-     * The XML Schema namespace
+     * What a contribution has to write for an affordance of each kind to be built
+     *
+     * @var array<string, string>
      */
-    private const XSD_NAMESPACE = 'http://www.w3.org/2001/XMLSchema';
+    private const AFFORDANCE_BODY = [
+        EditAffordanceInterface::KIND_LINK => ' route="adminhtml/system_config/edit">',
+        EditAffordanceInterface::KIND_INLINE => ' editorType="text">',
+        EditAffordanceInterface::KIND_INSTRUCTION => '><step id="one">Do this.</step>',
+        EditAffordanceInterface::KIND_NONE => '>',
+    ];
 
-    public function testTheShippedKnowledgeFileSatisfiesItsOwnSchema(): void
+    public function testEveryDirectiveKindThePhpSidePublishesCanBeDescribed(): void
     {
-        $document = new DOMDocument();
-        $document->load($this->path('email_variables.xml'));
+        $variables = '';
 
-        $previous = libxml_use_internal_errors(true);
-        libxml_clear_errors();
+        foreach (array_keys(DirectiveReferenceParser::KINDS) as $kind) {
+            $variables .= $this->variable($kind, '', 'text', 'computed', '');
+        }
 
-        $valid = $document->schemaValidate($this->path('email_variables.xsd'));
-        $messages = array_map(
-            static fn (LibXMLError $error): string => sprintf(
-                'line %d: %s',
-                $error->line,
-                trim($error->message)
-            ),
-            libxml_get_errors()
-        );
+        $knowledge = $this->accepted($variables);
 
-        libxml_clear_errors();
-        libxml_use_internal_errors($previous);
+        foreach (array_keys(DirectiveReferenceParser::KINDS) as $kind) {
+            self::assertNotNull(
+                $knowledge->describe(new DirectiveReference($kind, ''), 0),
+                sprintf('A contribution describing the {{%s}} directive was not filed.', $kind)
+            );
+        }
+    }
 
-        self::assertTrue($valid, implode(PHP_EOL, $messages));
+    public function testEveryOutputKindThePhpSidePublishesCanBeDeclared(): void
+    {
+        $kinds = $this->constants(VariableKnowledgeInterface::class, 'OUTPUT_');
+        $variables = '';
+
+        foreach ($kinds as $kind) {
+            $variables .= $this->variable('var', 'fixture.' . $kind, $kind, 'computed', '');
+        }
+
+        $entries = $this->entriesByExpression($this->accepted($variables));
+
+        foreach ($kinds as $kind) {
+            self::assertSame($kind, $entries['fixture.' . $kind]->getOutputKind());
+        }
+    }
+
+    public function testEveryOriginKindThePhpSidePublishesCanBeDeclared(): void
+    {
+        $kinds = $this->constants(OriginInterface::class, 'KIND_');
+        $variables = '';
+
+        foreach ($kinds as $kind) {
+            $variables .= $this->variable('var', 'fixture.' . $kind, 'text', $kind, '');
+        }
+
+        $entries = $this->entriesByExpression($this->accepted($variables));
+
+        foreach ($kinds as $kind) {
+            self::assertSame($kind, $entries['fixture.' . $kind]->getOrigin()->getKind());
+        }
+    }
+
+    public function testEveryAffordanceKindThePhpSidePublishesCanBeOffered(): void
+    {
+        $kinds = $this->constants(EditAffordanceInterface::class, 'KIND_');
+        $variables = '';
+
+        foreach ($kinds as $kind) {
+            self::assertArrayHasKey(
+                $kind,
+                self::AFFORDANCE_BODY,
+                sprintf('Say here what a contribution writes to offer a "%s" affordance.', $kind)
+            );
+
+            $variables .= $this->variable(
+                'var',
+                'fixture.' . $kind,
+                'text',
+                'computed',
+                sprintf('<affordance kind="%s" label="Change it"', $kind)
+                . self::AFFORDANCE_BODY[$kind] . '</affordance>'
+            );
+        }
+
+        $entries = $this->entriesByExpression($this->accepted($variables));
+
+        foreach ($kinds as $kind) {
+            self::assertSame($kind, $entries['fixture.' . $kind]->getAffordance()?->getKind());
+        }
+    }
+
+    public function testEveryInlineEditorTypeThePhpSidePublishesCanBeOffered(): void
+    {
+        $types = $this->constants(EditAffordanceInterface::class, 'EDITOR_');
+        $variables = '';
+
+        foreach ($types as $type) {
+            $variables .= $this->variable(
+                'var',
+                'fixture.' . $type,
+                'text',
+                'computed',
+                sprintf(
+                    '<affordance kind="inline" label="Change it" editorType="%s">'
+                    . '<option value="a">A</option></affordance>',
+                    $type
+                )
+            );
+        }
+
+        $entries = $this->entriesByExpression($this->accepted($variables));
+
+        foreach ($types as $type) {
+            self::assertSame($type, $entries['fixture.' . $type]->getAffordance()?->getEditorType());
+        }
     }
 
     /**
-     * @dataProvider enumerationProvider
-     * @param string $simpleType Name of the schema's simple type
-     * @param string[] $published The set PHP publishes
+     * @dataProvider unpublishedValueProvider
+     * @param string $variable A variable naming a value no PHP set publishes
      * @return void
      */
-    public function testAnEnumerationInTheSchemaListsWhatThePhpSidePublishes(
-        string $simpleType,
-        array $published
-    ): void {
-        self::assertSame($published, $this->enumeration($simpleType));
+    public function testAValueNobodyPublishesIsRefused(string $variable): void
+    {
+        $this->expectException(LocalizedException::class);
+
+        $this->knowledgeFrom(
+            ['fixture/email_variables.xml' => '<variables>' . $variable . '</variables>'],
+            $this->createMock(LoggerInterface::class)
+        );
     }
 
     /**
-     * @return array<string, array{string, string[]}>
+     * @return array<string, array{string}>
      */
-    public static function enumerationProvider(): array
+    public static function unpublishedValueProvider(): array
     {
+        $origin = '<title>T</title><summary>S</summary>';
+
         return [
-            'directive kinds' => [
-                'directiveKindType',
-                self::sorted(array_keys(DirectiveReferenceParser::KINDS)),
-            ],
-            'output kinds' => [
-                'outputKindType',
-                self::constants(VariableKnowledgeInterface::class, 'OUTPUT_'),
-            ],
-            'origin kinds' => [
-                'originKindType',
-                self::constants(OriginInterface::class, 'KIND_'),
-            ],
-            'affordance kinds' => [
-                'affordanceKindType',
-                self::constants(EditAffordanceInterface::class, 'KIND_'),
-            ],
-            'inline editor types' => [
-                'editorTypeType',
-                self::constants(EditAffordanceInterface::class, 'EDITOR_'),
-            ],
+            'directive kind' => ['<variable kind="banana" expression="">' . $origin
+                . '<origin kind="computed">E</origin></variable>'],
+            'output kind' => ['<variable kind="var" expression="x" outputKind="banana">' . $origin
+                . '<origin kind="computed">E</origin></variable>'],
+            'origin kind' => ['<variable kind="var" expression="x">' . $origin
+                . '<origin kind="banana">E</origin></variable>'],
+            'affordance kind' => ['<variable kind="var" expression="x">' . $origin
+                . '<origin kind="computed">E</origin><affordance kind="banana" label="L"/></variable>'],
+            'inline editor type' => ['<variable kind="var" expression="x">' . $origin
+                . '<origin kind="computed">E</origin><affordance kind="inline" label="L" editorType="banana"/>'
+                . '</variable>'],
         ];
     }
 
     /**
-     * The values a named simple type in the schema enumerates
+     * Read a contribution of the given variables, which nothing may refuse
      *
-     * @param string $simpleType Name of the simple type
-     * @return string[] Sorted, so the comparison is about the set and not about the order
+     * @param string $variables Variable elements
+     * @return VariableKnowledgeProviderInterface
      */
-    private function enumeration(string $simpleType): array
+    private function accepted(string $variables): VariableKnowledgeProviderInterface
     {
-        $document = new DOMDocument();
-        $document->load($this->path('email_variables.xsd'));
+        $logger = $this->createMock(LoggerInterface::class);
+        $logger->expects(self::never())->method('error');
 
-        $xpath = new DOMXPath($document);
-        $xpath->registerNamespace(self::XSD_PREFIX, self::XSD_NAMESPACE);
-
-        $nodes = $xpath->query(
-            sprintf(
-                '//%1$s:simpleType[@name="%2$s"]/%1$s:restriction/%1$s:enumeration/@value',
-                self::XSD_PREFIX,
-                $simpleType
-            )
+        return $this->knowledgeFrom(
+            ['fixture/email_variables.xml' => '<variables>' . $variables . '</variables>'],
+            $logger
         );
+    }
 
-        self::assertNotFalse($nodes, sprintf('The schema declares no simple type named "%s".', $simpleType));
+    /**
+     * Every entry the knowledge answers with, keyed by its expression
+     *
+     * @param VariableKnowledgeProviderInterface $knowledge
+     * @return array<string, VariableKnowledgeInterface>
+     */
+    private function entriesByExpression(VariableKnowledgeProviderInterface $knowledge): array
+    {
+        $entries = [];
 
-        $values = [];
-
-        foreach ($nodes as $node) {
-            $values[] = $node->nodeValue ?? '';
+        foreach ($knowledge->listAll(0) as $entry) {
+            $entries[$entry->getReference()->getExpression()] = $entry;
         }
 
-        return self::sorted($values);
+        return $entries;
+    }
+
+    /**
+     * One variable element, complete as the schema requires
+     *
+     * @param string $kind Directive kind
+     * @param string $expression Directive expression
+     * @param string $outputKind Output kind
+     * @param string $originKind Origin kind
+     * @param string $affordance Affordance element, or an empty string for none
+     * @return string
+     */
+    private function variable(
+        string $kind,
+        string $expression,
+        string $outputKind,
+        string $originKind,
+        string $affordance
+    ): string {
+        return sprintf(
+            '<variable kind="%s" expression="%s" outputKind="%s"><title>Fixture</title>'
+            . '<summary>A fixture entry.</summary><origin kind="%s">How it is made.</origin>%s</variable>',
+            $kind,
+            $expression,
+            $outputKind,
+            $originKind,
+            $affordance
+        );
     }
 
     /**
      * The values of an interface's constants whose names share a prefix
      *
-     * @param string $interface Interface publishing the set
+     * @param class-string $interface Interface publishing the set
      * @param string $prefix Constant name prefix marking membership of the set
-     * @return string[] Sorted
+     * @return string[]
      */
-    private static function constants(string $interface, string $prefix): array
+    private function constants(string $interface, string $prefix): array
     {
         $values = [];
 
         foreach ((new ReflectionClass($interface))->getConstants() as $name => $value) {
-            if (str_starts_with($name, $prefix)) {
-                $values[] = (string)$value;
+            if (str_starts_with($name, $prefix) && is_string($value)) {
+                $values[] = $value;
             }
         }
 
-        return self::sorted($values);
-    }
-
-    /**
-     * @param string[] $values Values to sort
-     * @return string[]
-     */
-    private static function sorted(array $values): array
-    {
-        sort($values);
+        self::assertNotEmpty($values, sprintf('%s publishes no %s constants.', $interface, $prefix));
 
         return $values;
-    }
-
-    /**
-     * Absolute path to a file in the module's etc directory
-     *
-     * @param string $fileName Name of the file
-     * @return string
-     */
-    private function path(string $fileName): string
-    {
-        return dirname(__DIR__, 4) . '/etc/' . $fileName;
     }
 }

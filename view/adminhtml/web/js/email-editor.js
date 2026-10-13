@@ -12,8 +12,25 @@ define([
     'uiRegistry',
     'Hryvinskyi_EmailTemplateEditor/js/email-editor/tailwind-compiler',
     'Magento_Ui/js/modal/alert',
-    'mage/translate'
-], function (_, Component, ko, $, registry, tailwindCompiler, uiAlert, $t) {
+    'mage/translate',
+    'Hryvinskyi_EmailTemplateEditor/js/email-editor/tailwind/compile-wait',
+    'Hryvinskyi_EmailTemplateEditor/js/email-editor/custom-data-skeleton',
+    'Hryvinskyi_EmailTemplateEditor/js/email-editor/draft-payload',
+    'Hryvinskyi_EmailTemplateEditor/js/email-editor/html-text'
+], function (
+    _,
+    Component,
+    ko,
+    $,
+    registry,
+    tailwindCompiler,
+    uiAlert,
+    $t,
+    compileWait,
+    customDataSkeleton,
+    draftPayload,
+    htmlText
+) {
     'use strict';
 
     return Component.extend({
@@ -64,16 +81,39 @@ define([
         _compilePromise: null,
 
         /**
-         * Milliseconds a persisting action waits for the Tailwind compile of its own content.
+         * The template content `_lastTailwindCss` was compiled for, null when no compile has
+         * answered since the template was loaded.
+         *
+         * The stylesheet restored from the stored override is deliberately not counted: it was
+         * produced by whichever compiler stored it, possibly one that missed classes, so only a
+         * compile run here may vouch for the content it is saved beside.
+         *
+         * @type {string|null}
+         */
+        _tailwindCssContent: null,
+
+        /**
+         * Milliseconds a persisting action waits before saying the Tailwind compile is slow.
          *
          * A warm compile costs a few hundred milliseconds, so this is reached only when the
-         * compiler is wedged or the bundle is unreachable. Long enough that a healthy compile
-         * always wins the wait; short enough that a broken one never turns a save into a hang —
-         * saving slightly stale styles is a smaller loss than not saving at all.
+         * bundle is still loading or the compiler is wedged. The action keeps waiting; the
+         * status bar only tells the user why nothing has happened yet.
          *
          * @type {number}
          */
         _compileWaitTimeout: 2000,
+
+        /**
+         * Milliseconds after which a persisting action gives up on the Tailwind compile.
+         *
+         * Past the compiler's own bounds - its ready fallback and its output polling settle
+         * every compile within a few seconds - so this is reached only by a compile that will
+         * never answer. Giving up stores nothing and leaves the draft dirty: going ahead would
+         * store the stylesheet of an earlier revision beside this content and report it clean.
+         *
+         * @type {number}
+         */
+        _compileGiveUpTimeout: 15000,
 
         /** @type {Object} */
         _providerEntitySelectionMap: {},
@@ -1269,7 +1309,7 @@ define([
                                 : '';
 
                             self.customDataEditor.setValue(
-                                self._buildCustomDataJson(loadedContent, previousCustomData)
+                                customDataSkeleton.build(loadedContent, previousCustomData)
                             );
                         }
 
@@ -1303,13 +1343,7 @@ define([
                         ? parseInt(res.template.store_id, 10)
                         : self.getEffectiveStoreId();
 
-                    if (!isDefault && res.template.tailwind_css) {
-                        self._lastTailwindCss = res.template.tailwind_css;
-                        self.tailwindCssOutput(res.template.tailwind_css);
-                    } else if (isDefault) {
-                        self._lastTailwindCss = '';
-                        self.tailwindCssOutput('');
-                    }
+                    self._restoreStoredTailwindCss(isDefault ? '' : (res.template.tailwind_css || ''));
 
                     self._suppressChangeEvents = false;
 
@@ -1353,6 +1387,32 @@ define([
                 self.setStatus('error', 'ERROR');
                 self.statusBarText('Failed to load template');
             });
+        },
+
+        /**
+         * Start the Tailwind state of a freshly loaded template from what was stored with it.
+         *
+         * Every load replaces the stylesheet, an empty one included: a template stored without
+         * Tailwind CSS must not inherit the previous template's, or the next save would store
+         * one template's styles under another's name.
+         *
+         * Every load also forgets the remembered compile. The stored stylesheet now in place is
+         * not the answer of that compile, and a later request for the same theme and content
+         * would otherwise be handed the remembered promise - long settled, so its handler never
+         * runs again - and leave the stored stylesheet standing in for a compile that never
+         * happened. Reload is exactly that case: same content, stored CSS put back over the
+         * compiled one, and saved again as it was.
+         *
+         * @param {string} storedCss the override's stored Tailwind CSS, '' when it has none
+         * @return {void}
+         * @private
+         */
+        _restoreStoredTailwindCss: function (storedCss) {
+            this._compileKey = null;
+            this._compilePromise = null;
+            this._tailwindCssContent = null;
+            this._lastTailwindCss = storedCss;
+            this.tailwindCssOutput(storedCss);
         },
 
         /**
@@ -1429,6 +1489,8 @@ define([
                     return;
                 }
 
+                self._tailwindCssContent = html;
+
                 if (twString !== self._lastTailwindCss) {
                     self._lastTailwindCss = twString;
                     self.tailwindCssOutput(twString);
@@ -1439,51 +1501,61 @@ define([
         },
 
         /**
-         * Run `callback` once the Tailwind CSS for `content` is available, or once the
-         * bounded wait has expired - whichever happens first.
+         * Run `callback` once the Tailwind compile for `content` has answered, or `onGiveUp`
+         * if it never does.
          *
-         * A compile that has already produced this content's CSS settles the gate
-         * synchronously, so the common case gains no tick and no delay. A compile that
-         * fails settles it too, because a failure is an answer. Only a compile that never
-         * settles at all reaches the timeout, and then the action still goes ahead with
-         * whatever CSS is current: an action delayed by a wedged compiler is a worse
-         * outcome than one carrying slightly older styles, and an action that never
-         * happens is worse than both.
+         * A compile that has already produced this content's CSS answers synchronously, so
+         * the common case gains no tick and no delay. A compile that fails answers too,
+         * because a failure is an answer. A slow compile is waited for, with the status bar
+         * saying why nothing has happened yet. Only a compile that never answers reaches the
+         * ceiling, and then the action does not go ahead: carrying on would store or send the
+         * stylesheet of an earlier revision as though it belonged to this one.
          *
          * @param {string} content - Template HTML the caller is about to persist or send.
-         * @param {Function} callback - Invoked with no arguments once the wait is over.
+         * @param {Function} callback - Invoked with no arguments once the compile has answered.
+         * @param {Function} [onGiveUp] - Invoked instead when the compile never answers.
          * @return {void}
          */
-        _withCompiledCss: function (content, callback) {
+        _withCompiledCss: function (content, callback, onGiveUp) {
             var self = this,
-                gate = $.Deferred(),
-                promise = this._compileTailwind(content),
-                timer;
+                promise = this._compileTailwind(content);
 
-            timer = setTimeout(function () {
-                if (window.console && typeof window.console.warn === 'function') {
-                    window.console.warn(
-                        '[EmailTemplateEditor] Tailwind compile did not finish within ' +
-                        self._compileWaitTimeout + 'ms; continuing with the last known CSS.'
-                    );
+            compileWait.wait(
+                function (answered) {
+                    if (promise && typeof promise.always === 'function') {
+                        promise.always(answered);
+                    } else {
+                        answered();
+                    }
+                },
+                {slowAfter: this._compileWaitTimeout, giveUpAfter: this._compileGiveUpTimeout},
+                {
+                    set: function (handler, delay) {
+                        return setTimeout(handler, delay);
+                    },
+                    clear: function (handle) {
+                        clearTimeout(handle);
+                    }
+                },
+                {
+                    slow: function () {
+                        self.statusBarText($t('Waiting for the Tailwind styles to finish compiling...'));
+                    },
+                    answered: callback,
+                    gaveUp: function () {
+                        if (window.console && typeof window.console.warn === 'function') {
+                            window.console.warn(
+                                '[EmailTemplateEditor] Tailwind compile did not finish within ' +
+                                self._compileGiveUpTimeout + 'ms; nothing was saved or sent.'
+                            );
+                        }
+
+                        if (typeof onGiveUp === 'function') {
+                            onGiveUp();
+                        }
+                    }
                 }
-
-                gate.resolve();
-            }, this._compileWaitTimeout);
-
-            if (promise && typeof promise.always === 'function') {
-                // Resolving the gate a second time is a no-op: a Deferred locks on its first
-                // settle, so the timer and the compile cannot both take effect.
-                promise.always(function () {
-                    clearTimeout(timer);
-                    gate.resolve();
-                });
-            } else {
-                clearTimeout(timer);
-                gate.resolve();
-            }
-
-            gate.done(callback);
+            );
         },
 
         /**
@@ -1573,7 +1645,7 @@ define([
                 } else {
                     self.previewPanel.setContent(
                         '<div style="color:#eb5202;padding:20px;">Error: ' +
-                        (res.message || 'Unknown error') + '</div>'
+                        htmlText.escape(res.message || 'Unknown error') + '</div>'
                     );
                 }
             }).fail(function (xhr, textStatus) {
@@ -1664,148 +1736,6 @@ define([
         },
 
         /**
-         * Parse the Magento directives in the given content, collect every
-         * referenced variable path and build a pretty-printed JSON skeleton.
-         *
-         * Each "{{...}}" directive is inspected for both the leading variable of
-         * "var"/"if"/"depend" directives and any "$object.property" references
-         * (e.g. trans parameters such as {{trans "Hi %name" name=$customer.name}}).
-         * Variables are resolved as nested objects (e.g. "order.increment_id"
-         * becomes {"order": {"increment_id": ""}}). Sample values already entered
-         * for variables that are still referenced are preserved.
-         *
-         * @param {string} content
-         * @param {string} existingJson
-         * @return {string}
-         */
-        _buildCustomDataJson: function (content, existingJson) {
-            var self = this,
-                data = {},
-                existing = {},
-                directiveRegex = /\{\{(.*?)\}\}/g,
-                leadRegex = /^\s*(?:var|if|elseif|depend)\s+([a-zA-Z_][a-zA-Z0-9_.]*)/,
-                directive,
-                lead;
-
-            try {
-                existing = existingJson ? JSON.parse(existingJson) : {};
-            } catch (e) {
-                existing = {};
-            }
-
-            while ((directive = directiveRegex.exec(content || '')) !== null) {
-                var body = directive[1],
-                    dollarRegex = /\$([a-zA-Z_][a-zA-Z0-9_.]*)/g,
-                    dollar;
-
-                lead = body.match(leadRegex);
-
-                if (lead && self._isPlainVariablePath(lead[1])) {
-                    self._assignVariablePath(data, lead[1].split('.'));
-                }
-
-                while ((dollar = dollarRegex.exec(body)) !== null) {
-                    if (body.charAt(dollar.index + dollar[0].length) === '(') {
-                        continue;
-                    }
-
-                    if (self._isPlainVariablePath(dollar[1])) {
-                        self._assignVariablePath(data, dollar[1].split('.'));
-                    }
-                }
-            }
-
-            if (Object.keys(data).length === 0) {
-                return existingJson || '';
-            }
-
-            this._mergeExistingValues(data, existing);
-
-            return JSON.stringify(data, null, 2);
-        },
-
-        /**
-         * Determine whether a token is a plain data variable path that can be
-         * represented in JSON, excluding method calls and helper objects.
-         *
-         * @param {string} path
-         * @return {boolean}
-         */
-        _isPlainVariablePath: function (path) {
-            if (!path || path.indexOf('(') !== -1 || path.indexOf(' ') !== -1) {
-                return false;
-            }
-
-            if (path.split('.')[0] === 'this') {
-                return false;
-            }
-
-            return /^[a-zA-Z_][a-zA-Z0-9_.]*$/.test(path);
-        },
-
-        /**
-         * Assign an empty placeholder for a dotted variable path, creating nested
-         * objects for intermediate segments without overwriting existing branches.
-         *
-         * @param {Object} target
-         * @param {Array<string>} parts
-         */
-        _assignVariablePath: function (target, parts) {
-            var current = target,
-                i,
-                key;
-
-            for (i = 0; i < parts.length; i++) {
-                key = parts[i];
-
-                if (!key) {
-                    return;
-                }
-
-                if (i === parts.length - 1) {
-                    if (current[key] === undefined) {
-                        current[key] = '';
-                    }
-                } else {
-                    if (typeof current[key] !== 'object' || current[key] === null) {
-                        current[key] = {};
-                    }
-
-                    current = current[key];
-                }
-            }
-        },
-
-        /**
-         * Copy previously entered sample values onto the freshly extracted skeleton
-         * for any variable path that is still referenced by the template.
-         *
-         * @param {Object} target
-         * @param {Object} existing
-         */
-        _mergeExistingValues: function (target, existing) {
-            var self = this;
-
-            if (!target || typeof target !== 'object' || !existing || typeof existing !== 'object') {
-                return;
-            }
-
-            Object.keys(target).forEach(function (key) {
-                if (existing[key] === undefined) {
-                    return;
-                }
-
-                if (target[key] && typeof target[key] === 'object') {
-                    if (existing[key] && typeof existing[key] === 'object') {
-                        self._mergeExistingValues(target[key], existing[key]);
-                    }
-                } else if (typeof existing[key] !== 'object') {
-                    target[key] = existing[key];
-                }
-            });
-        },
-
-        /**
          * Read the revision a save may claim to have stored, given what its CSS was compiled for.
          *
          * Waiting for the compile opens a window in which the user can keep typing. When
@@ -1858,6 +1788,10 @@ define([
         /**
          * Collect the current state of all editors into a single data object for saving.
          *
+         * The server keeps a stored value for a field left out and clears one sent empty, so
+         * the theme and the Tailwind CSS are carried only when they are known - see
+         * draft-payload for why an empty placeholder would wipe them.
+         *
          * @return {Object}
          */
         getSaveData: function () {
@@ -1874,10 +1808,6 @@ define([
                     custom_css: this.customCssEditor
                         ? this.customCssEditor.getValue()
                         : '',
-                    tailwind_css: this._lastTailwindCss || '',
-                    theme_id: this.themeEditor
-                        ? this.themeEditor.getCurrentThemeId()
-                        : '',
                     active_from: dates.active_from,
                     active_to: dates.active_to,
                     entity_id: this._currentEntityId || '',
@@ -1889,6 +1819,9 @@ define([
             if (providerCode === 'custom') {
                 data.custom_variables = this.customDataEditor ? this.customDataEditor.getValue() : '';
             }
+
+            draftPayload.withThemeId(data, this.themeEditor ? this.themeEditor.getCurrentThemeId() : null);
+            draftPayload.withTailwindCss(data, this._lastTailwindCss, this._tailwindCssContent);
 
             return data;
         },
@@ -1973,6 +1906,18 @@ define([
                 }
 
                 self._sendDraftSave(data, generation, forkFromPublished);
+            }, function () {
+                // Nothing was sent, so the draft is still dirty and its auto-save is armed
+                // again; the next attempt waits for the compile afresh.
+                self._saveDraftInFlight = false;
+                self.setStatus('modified');
+                self.statusBarText(
+                    $t('The draft was not saved because the Tailwind styles did not finish compiling. It will be saved again shortly.')
+                );
+
+                if (self.draftManager) {
+                    self.draftManager.reschedule();
+                }
             });
         },
 
@@ -1994,6 +1939,10 @@ define([
             var self = this;
 
             this._ajax(this.urls.saveDraft, data, 'POST').done(function (res) {
+                // The server forks an edit aimed at a published row into the working draft
+                // on its own and says so; that is the same outcome as forking here.
+                var forked = forkFromPublished || res.forked === true;
+
                 if (res.success) {
                     self.currentTemplateStatus('draft');
                     self.hasDraft(true);
@@ -2004,7 +1953,7 @@ define([
                     if (self.templateSidebar) {
                         // Point the tree at the freshly forked draft before refreshing so
                         // the sidebar selection stays in sync with what the editor shows.
-                        if (forkFromPublished && res.entity_id) {
+                        if (forked && res.entity_id) {
                             self.templateSidebar.activeOverrideId(res.entity_id);
                             self.templateSidebar.expandTemplate(self.currentTemplateId());
                         }
@@ -2101,6 +2050,12 @@ define([
                         delete data.entity_id;
 
                         self._sendNewDraftSave(data, generation, identifier);
+                    },
+                    function () {
+                        self.setStatus('error', 'ERROR');
+                        self.statusBarText(
+                            $t('The new draft was not created because the Tailwind styles did not finish compiling. Please try again.')
+                        );
                     }
                 );
             });
@@ -2206,6 +2161,13 @@ define([
                 data.status = 'draft';
 
                 self._sendPublish(data, generation, comment);
+            }, function () {
+                self.setStatus('error', 'ERROR');
+                self.statusBarText($t('Not published: the Tailwind styles did not finish compiling'));
+                uiAlert({
+                    title: $t('Styles Are Still Compiling'),
+                    content: $t('The Tailwind styles for this template did not finish compiling, so nothing was published. Check that the editor can reach the Tailwind script, then publish again.')
+                });
             });
         },
 
@@ -2248,6 +2210,10 @@ define([
          */
         _sendPublish: function (data, generation, comment) {
             var self = this;
+
+            // Only a publish may write onto the published row; any other save aimed at it is
+            // forked into the working draft by the server.
+            data.intent = 'publish';
 
             this._ajax(this.urls.saveDraft, data, 'POST').done(function (saveRes) {
                 if (!saveRes.success || !saveRes.entity_id) {
@@ -2699,6 +2665,7 @@ define([
                 template_subject: this.subject() || '',
                 template_identifier: this.currentTemplateId(),
                 custom_css: this.customCssEditor ? this.customCssEditor.getValue() : '',
+                theme_css: this.themeEditor ? this.themeEditor.getThemeCss() : '',
                 tailwind_css: '',
                 provider_code: this.selectedProvider() || 'mock',
                 entity_id: this.selectedEntityId ? this.selectedEntityId() : ''
@@ -2730,6 +2697,12 @@ define([
                     self.sendTestEmailFeedback($.mage.__('Network error. Please try again.'));
                     self.sendTestEmailHasError(true);
                 });
+            }, function () {
+                self.sendTestEmailSending(false);
+                self.sendTestEmailFeedback(
+                    $t('The test email was not sent because the Tailwind styles did not finish compiling. Please try again.')
+                );
+                self.sendTestEmailHasError(true);
             });
         },
 

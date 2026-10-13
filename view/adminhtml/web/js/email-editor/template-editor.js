@@ -10,8 +10,9 @@ define([
     'jquery',
     'uiRegistry',
     'Hryvinskyi_EmailTemplateEditor/js/email-editor/knowledge/directive-decorator',
-    'Hryvinskyi_EmailTemplateEditor/js/email-editor/knowledge/directive-scanner'
-], function (Component, ko, $, registry, directiveDecorator, directiveScanner) {
+    'Hryvinskyi_EmailTemplateEditor/js/email-editor/knowledge/directive-scanner',
+    'Hryvinskyi_EmailTemplateEditor/js/email-editor/markup-formatter'
+], function (Component, ko, $, registry, directiveDecorator, directiveScanner, markupFormatter) {
     'use strict';
 
     return Component.extend({
@@ -159,16 +160,16 @@ define([
 
         /**
          * Format the current HTML content with basic line-break formatting.
+         *
+         * Directives are left byte-identical: the text inside a {{trans}} is the key its
+         * translation is looked up by.
          */
         formatCode: function () {
             if (!this.editor || this._readOnly) {
                 return;
             }
 
-            var content = this.editor.getValue();
-            var formatted = content.replace(/></g, '>\n<');
-
-            this.editor.setValue(formatted);
+            this.editor.setValue(markupFormatter.breakBetweenTags(this.editor.getValue()));
         },
 
         /**

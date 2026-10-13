@@ -40,12 +40,24 @@ class ConfigPathKnowledgeProviderTest extends TestCase
         'general/store_information/country_id',
     ];
 
-    private Structure&MockObject $configStructure;
+    /**
+     * @var Structure&MockObject
+     */
+    private MockObject $configStructure;
 
-    private ConfigVariables&MockObject $configVariables;
+    /**
+     * @var ConfigVariables&MockObject
+     */
+    private MockObject $configVariables;
 
+    /**
+     * @var DirectiveReferenceParser
+     */
     private DirectiveReferenceParser $parser;
 
+    /**
+     * @var ConfigPathKnowledgeProvider
+     */
     private ConfigPathKnowledgeProvider $provider;
 
     /**
@@ -204,7 +216,7 @@ class ConfigPathKnowledgeProviderTest extends TestCase
     /**
      * @return array<string, array{string, string}>
      */
-    public function foreignReferenceProvider(): array
+    public static function foreignReferenceProvider(): array
     {
         return [
             'variable' => ['var', 'store.getFormattedAddress()'],

@@ -5,6 +5,132 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-10-13
+
+### Fixed
+- **Override CSS never reached a sent email inlined.** Each override embedded its CSS as a `<style>`
+  block in its own output - the header's in the head, the footer's in the middle of the body - after
+  Magento's `{{inlinecss}}` pass, which never parses style blocks. Clients that drop style blocks, or
+  read them only from the head, showed the override unstyled; the preview inlined everything and hid
+  it. Every template of an email now hands its stylesheet to the outermost render, which inlines the
+  whole sheet once into the finished document (`EmailStylesheetCollectorInterface`). The theme's CSS
+  is in it once instead of once per override, so a message with a header and a footer override no
+  longer passes Gmail's 102 KB clipping limit (a Contact Form email on a test store: 55 KB → 20 KB).
+  The preview, the version preview and the test email go through the same pass.
+- **Embedding CSS could corrupt it.** The `<style>` block was spliced in with `preg_replace`, which
+  read `\201C`, `\32xl` or `$1` in the CSS as back-references. The splice is gone with the embed.
+- **A plain-text email received a style block** from an override's CSS. It is no longer styled.
+- **A template processed twice lost its CSS the second time**, and a long-running sender (cron, a
+  queue consumer) kept the overrides it had resolved for its first email. A template's stylesheet
+  now lasts as long as the template, and resolved overrides are forgotten after every email.
+- **The rule after a Tailwind layer-order statement was never inlined.** Tailwind opens its output
+  with a `/*! tailwindcss … */` banner, which hid the `@layer theme, base, components, utilities;`
+  after it from the flattener; the inliner then read that statement and the next rule as one unknown
+  at-rule (`.mb-11` on a stored header). Tailwind source stored by earlier versions
+  (`@import "tailwindcss"`, `@theme { … }`) is now dropped before inlining as well.
+- **The preview put the draft's theme below the CSS of the header and footer it includes**, and
+  inlined the theme's own `<style>` blocks, which a real send leaves alone. Within each tier the
+  draft now comes last, and the document's style blocks are left as the core leaves them. The
+  preview no longer fills `template_styles` with the theme's CSS either.
+- **A version was previewed with the store's default theme** instead of the theme it was saved with.
+- **A draft save reset fields it did not carry.** An absent theme, Tailwind CSS, schedule or sample
+  provider was stored as empty. Only a field sent empty clears now; an absent one keeps its value.
+- **A save aimed at the published override changed what customers receive without a version.** Only
+  the publish flow (`intent: publish`) writes a published override; any other save goes to the
+  template's working draft, created from the published override when there is none, and the answer
+  says `forked: true` (`TemplateDraftSaverInterface`).
+- **The preview opened in a new tab ran on the admin's origin.** It is served with
+  `Content-Security-Policy: sandbox`, so nothing in a template can act with the viewer's session.
+- **No module could add to the two shipped knowledge entries whose expression holds quotes and
+  brackets** (`this.getUrl($store,'customer/account/',…)`). The framework's merge wrote the
+  expression into an XPath predicate unescaped; the contribution became a second entry and the
+  schema refused the merged file. The knowledge reader now merges with a `Dom` that writes proper
+  XPath literals.
+- **The test email showed `{{layout}}` blocks for mock data** instead of the placeholders the
+  preview shows.
+- **Utility classes on a footer's own cell were never compiled.** A footer opens by closing the cell
+  the header left open (`</td></tr><tr><td class="footer ...">`). The compiler read class names from
+  the markup *after* parsing it, and the parser drops a row and cell that stray, class attribute and
+  all, so a class used only there (`border-t-3`) never reached the stored `tailwind_css` and never
+  reached an email. Classes that also appeared in the header still rendered, borrowed from the
+  header's CSS, which hid the cause. Class names are now read from the source text. An override
+  saved before this fix keeps its incomplete CSS until it is saved again.
+- **A template loaded without stored Tailwind CSS kept the previous template's.** The editor only
+  replaced its stylesheet when the loaded override carried one, so the next save stored one
+  template's styles under another's name. Every load now replaces it, an empty one included.
+- **Reload Template saved the stored stylesheet again instead of recompiling.** Loading put the
+  stored CSS back while the editor still remembered a compile of the same content, so no compile ran
+  and the stored CSS - including CSS stored by a compiler that missed classes - was saved again.
+  Every load now forgets the remembered compile.
+- **A save that stopped waiting for the Tailwind compile stored the previous revision's CSS and
+  reported the draft clean.** After 2 s the save went ahead with whatever CSS was current. A slow
+  compile is now waited for (the status bar says so); one that never answers within 15 s stores,
+  publishes or sends nothing and leaves the draft dirty, so the auto-save tries again.
+- **The stored Tailwind CSS carried the raw theme and the template's own `<style>` blocks.** The
+  compiler read back every `<style>` in its frame that looked like Tailwind, its own theme input
+  and the template's styles included, and could settle on those before the bundle had written
+  anything. It now reads only the stylesheet the bundle appends.
+- **Format Code changed the text of `{{trans}}` directives.** Breaking lines between adjacent tags
+  also broke them inside a directive (`{{trans "Hello,<br><br>%name"}}`), changing the key the
+  translation is looked up by. Directive interiors are now left byte-identical.
+- **The custom sample-data skeleton missed directives written over several lines.**
+- **A late version preview or comparison replaced the one being looked at.** Only the answer to the
+  latest click now changes the screen.
+- **The Restore Version dialog showed `<strong>` literally.** The detail is plain text, as the
+  dialog renders it.
+- **A preview error message from the server was written into the preview frame as markup.** It is
+  escaped now.
+- **A draft save sent an empty theme or Tailwind CSS it did not know.** A theme still loading was
+  sent as `''`, and a stylesheet never compiled for the content was sent as the last one compiled
+  for something else. Both are now left out, so the stored value is kept.
+- **The test email used the store's default theme** instead of the theme on screen; it now sends
+  `theme_css` like the preview does.
+
+### Changed
+- **A header or footer is previewed as the email it belongs to.** Rendered alone, a header is an
+  unclosed document and a footer starts with closing tags. The preview, the version preview and the
+  test email now place the edited header before a content placeholder and the configured footer, or
+  the configured header and a placeholder before the edited footer. The frames are a `di.xml` pool
+  (`TemplatePreviewFramerInterface`) keyed by the configuration path a store includes the template
+  by, so the template `design/email/header_template` points at - the stock one, a legacy
+  Transactional Emails row or a template of another name - is framed as the header
+  (`ConfiguredTemplateResolverInterface`).
+- `EmailTemplatePlugin` styles an email in `aroundGetProcessedTemplate`; `afterGetProcessedTemplate`
+  and the plugin's CSS flattener, resolver and promoter dependencies are gone. `CssInliner` no
+  longer parses the document's own style blocks.
+- The `{{layout}}` placeholder of a mock-data preview is translatable and shares its markup with the
+  new content placeholder.
+- The Tailwind browser bundle is pinned to `@tailwindcss/browser@4.3.3` (the release `@4` resolved
+  to). A floating range let an upstream release change the CSS stored with every override.
+- The save made on the way to publishing carries `intent: publish`; a draft save the server forks
+  into the working draft (`forked: true`) is followed like a fork made in the browser.
+
+### Tests
+- The plugin is tested rendering an email that includes a footer, with the real stylesheet collector
+  and, end to end, the real inliner: the footer's `border-t-3` ends up in its cell's `style`. The
+  collector, the draft saver (on the real override model), the configured-template resolver, the
+  knowledge merge and the preview, version preview, test email and save controllers have tests.
+- `ModuleContainer` builds Magento's own object manager from the module's `etc/di.xml` — read and
+  schema-validated by the framework's DI reader — so wiring is tested as an installation resolves it.
+  The preview frames are the first wiring tested that way.
+- The template double in `EmailTemplatePluginTest` no longer assumes which `template_text` /
+  `template_subject` writers a Magento release declares; on 2.4.8 the whole class errored.
+- `I18nCoverageTest` is removed: it asserted the text of the module's own source files. Dictionary
+  drift is now a release check (`bin/magento i18n:collect-phrases` against `i18n/en_US.csv`), with
+  the gaps that collector has.
+- The tests that read the module's own files are replaced by tests that run the code: the modifier
+  vocabulary comes from `ModuleContainer`, the editor's ACL resource from Magento's ACL reader and
+  loader, and the knowledge file is read through the module's reader, schema, converter and provider
+  (fixtures prove every PHP-published kind is accepted and an unknown one refused). The layout,
+  Knockout-template and popover-width lints in `Test/Js` are removed; nothing in this repository can
+  render the admin page they describe. Data providers are static, which clears the PHPUnit
+  deprecations they raised.
+- The editor's persistence rules run against the real `email-editor.js` component with a compiler
+  the test answers by hand: restored and recompiled CSS, the give-up path, the fields a save leaves
+  out, the publish intent, the server-side fork, the test email's theme and the escaped preview
+  error. New pure modules (`compile-wait`, `markup-formatter`, `custom-data-skeleton`,
+  `draft-payload`, `html-text`) and the version history panel's request ordering are covered too.
+
 ## [1.3.0] - 2026-07-28
 
 Five defects that each gave a recipient something other than what the administrator saw, and none of

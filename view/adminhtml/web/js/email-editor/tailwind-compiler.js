@@ -4,7 +4,10 @@
  * GitHub: https://github.com/hryvinskyi
  */
 
-define(['jquery'], function ($) {
+define([
+    'jquery',
+    'Hryvinskyi_EmailTemplateEditor/js/email-editor/tailwind/class-names'
+], function ($, classNames) {
     'use strict';
 
     /**
@@ -48,8 +51,16 @@ define(['jquery'], function ($) {
          */
         _extractRuns: [],
 
-        /** @type {string} the Tailwind v4 browser bundle the iframe loads */
-        _CDN_SCRIPT_URL: 'https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4',
+        /**
+         * The Tailwind v4 browser bundle the iframe loads, pinned to one release.
+         *
+         * The stylesheet it produces is stored with each override and sent to customers, so a
+         * floating range would let a new upstream release change delivered emails with nothing
+         * in this module changing. Moving to another release is a deliberate edit here.
+         *
+         * @type {string}
+         */
+        _CDN_SCRIPT_URL: 'https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.3.3',
 
         /** @type {string} id of the <style> block this compiler writes the theme into */
         _THEME_STYLE_ID: 'ete-tw-theme',
@@ -171,11 +182,11 @@ define(['jquery'], function ($) {
                 deferred = $.Deferred(),
                 themeCss = this._themeCss || '',
                 bakedHtml = this._bakedHtml || '',
-                classShadow = this._collectClassNames(bakedHtml),
+                classShadow = this._bakedClassShadow || '',
                 iframe;
 
             this._readyDeferred = deferred;
-            this._appliedThemeKey = themeCss + '\0' + bakedHtml;
+            this._appliedThemeKey = this._contentKey(themeCss, bakedHtml, classShadow);
             // A fresh iframe is a fresh verdict, and this is the only place the verdict is
             // cleared. The ordering is load-bearing: compile() tears the old iframe down and
             // builds a new one, and the teardown settles whatever it abandons *before* this
@@ -361,7 +372,11 @@ define(['jquery'], function ($) {
             var self = this,
                 deferred = $.Deferred(),
                 stripped = this._stripResourceUrls(htmlContent || ''),
-                desiredKey = (this._themeCss || '') + '\0' + stripped;
+                // Read from the source as written, not from `stripped`: stripping parses the
+                // markup, and a fragment such as a footer that opens with `</td></tr><tr><td
+                // class="...">` loses that row and cell - classes and all - to the parser.
+                classShadow = this._escapeAttribute(classNames.collect(htmlContent || '').join(' ')),
+                desiredKey = this._contentKey(this._themeCss || '', stripped, classShadow);
 
             // Fast path: nothing changed since the last successful compile.
             if (this._ready && desiredKey === this._appliedThemeKey && typeof this._lastCss === 'string') {
@@ -377,6 +392,7 @@ define(['jquery'], function ($) {
             }
 
             this._bakedHtml = stripped;
+            this._bakedClassShadow = classShadow;
 
             this.init().done(function () {
                 self._extractWithRetry(deferred);
@@ -446,16 +462,32 @@ define(['jquery'], function ($) {
          * @private
          */
         _bundleStyleMissing: function (iframeDoc) {
-            var styles = iframeDoc.querySelectorAll('style:not(#' + this._THEME_STYLE_ID + ')'),
+            return this._bundleStyles(iframeDoc).length === 0;
+        },
+
+        /**
+         * The <style> elements the bundle appended, and nothing else
+         *
+         * Neither the theme block this compiler writes nor a <style> the template carries is
+         * output: the first is the input the bundle reads, the second is markup baked into the
+         * content wrapper so its classes can be scanned.
+         *
+         * @param {Document} iframeDoc
+         * @returns {Array<HTMLStyleElement>}
+         * @private
+         */
+        _bundleStyles: function (iframeDoc) {
+            var styles = iframeDoc.querySelectorAll('style'),
+                found = [],
                 i;
 
             for (i = 0; i < styles.length; i++) {
-                if (!this._isInsideContentWrapper(styles[i])) {
-                    return false;
+                if (styles[i].id !== this._THEME_STYLE_ID && !this._isInsideContentWrapper(styles[i])) {
+                    found.push(styles[i]);
                 }
             }
 
-            return true;
+            return found;
         },
 
         /**
@@ -674,44 +706,31 @@ define(['jquery'], function ($) {
         },
 
         /**
-         * Collect every class name that appears anywhere in the source HTML.
+         * Identify what an iframe was built from, so an unchanged compile can reuse it
          *
-         * Tailwind v4's scanner is text-based and can drop class attributes that sit
-         * next to Magento `{{if ...}}` / `{{var ...}}` directives inside the same tag
-         * (the directives confuse its attribute tokenizer). Surfacing every class
-         * name in a separate clean wrapper element guarantees the scanner sees them
-         * all regardless of how messy the original markup is.
+         * The class shadow is part of the identity because it is read from the source as
+         * written, while the baked HTML is what survived parsing: a class edited on an element
+         * the parser drops changes the shadow and nothing else.
          *
-         * @param {string} html
-         * @returns {string} space-separated, HTML-escaped class-name list
+         * @param {string} themeCss
+         * @param {string} bakedHtml
+         * @param {string} classShadow
+         * @returns {string}
          * @private
          */
-        _collectClassNames: function (html) {
-            if (!html) {
-                return '';
-            }
+        _contentKey: function (themeCss, bakedHtml, classShadow) {
+            return themeCss + '\0' + bakedHtml + '\0' + classShadow;
+        },
 
-            var classRegex = /class\s*=\s*(?:"([^"]*)"|'([^']*)')/gi,
-                seen = Object.create(null),
-                ordered = [],
-                match,
-                token,
-                names,
-                i;
-
-            while ((match = classRegex.exec(html)) !== null) {
-                names = (match[1] || match[2] || '').split(/\s+/);
-                for (i = 0; i < names.length; i++) {
-                    token = names[i];
-                    if (!token || seen[token]) {
-                        continue;
-                    }
-                    seen[token] = true;
-                    ordered.push(token);
-                }
-            }
-
-            return ordered.join(' ')
+        /**
+         * Escape text for a double-quoted attribute of the document this compiler writes
+         *
+         * @param {string} text
+         * @returns {string}
+         * @private
+         */
+        _escapeAttribute: function (text) {
+            return text
                 .replace(/&/g, '&amp;')
                 .replace(/"/g, '&quot;')
                 .replace(/</g, '&lt;')
@@ -721,31 +740,23 @@ define(['jquery'], function ($) {
         /**
          * Extract the generated Tailwind CSS from the iframe document
          *
+         * Only what the bundle wrote counts. Reading every <style> that looked like Tailwind
+         * also picked up the theme block - a `@theme` with a nested `@layer` reads exactly like
+         * output - and the template's own <style> blocks, so the stored stylesheet carried the
+         * raw theme and a copy of the template's styles, and the output poll could settle on the
+         * theme block alone before the bundle had produced anything.
+         *
          * @param {Document} iframeDoc
          * @returns {string}
          * @private
          */
         _extractCss: function (iframeDoc) {
-            var styles = iframeDoc.querySelectorAll('style'),
+            var styles = this._bundleStyles(iframeDoc),
                 css = '',
-                styleText,
                 i;
 
             for (i = 0; i < styles.length; i++) {
-                styleText = styles[i].textContent || '';
-
-                if (styleText.indexOf('tailwind') !== -1 ||
-                    styleText.indexOf('--tw-') !== -1 ||
-                    styleText.indexOf('@layer') !== -1 ||
-                    styleText.indexOf('@property') !== -1 ||
-                    styleText.indexOf('.bg-') !== -1 ||
-                    styleText.indexOf('.text-') !== -1 ||
-                    styleText.indexOf('.p-') !== -1 ||
-                    styleText.indexOf('.m-') !== -1 ||
-                    styleText.indexOf('.flex') !== -1 ||
-                    styleText.indexOf('.grid') !== -1) {
-                    css += styleText + '\n';
-                }
+                css += (styles[i].textContent || '') + '\n';
             }
 
             return css.trim();

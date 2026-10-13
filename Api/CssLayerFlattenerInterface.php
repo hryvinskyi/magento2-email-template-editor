@@ -28,6 +28,9 @@ interface CssLayerFlattenerInterface
      *   register is hoisted into a leading `:root { … }` block so `var()` references to
      *   those slots (e.g. `border-style: var(--tw-border-style)`) stay resolvable.
      * - Every other `@layer X { rules }` is unwrapped so the inner rules become top-level.
+     * - Statement-form `@layer a, b;` is dropped, a comment in front of it notwithstanding.
+     * - Tailwind source (`@import "tailwindcss"`, `@theme { … }`, `@source`, `@plugin` and the
+     *   like) is dropped: it is compiler input, not CSS.
      *
      * @param string $css
      * @return string

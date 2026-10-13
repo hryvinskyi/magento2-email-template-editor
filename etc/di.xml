@@ -34,6 +34,8 @@
                 type="Hryvinskyi\EmailTemplateEditor\Model\TemplateVersionRepository"/>
     <preference for="Hryvinskyi\EmailTemplateEditor\Api\TemplatePublisherInterface"
                 type="Hryvinskyi\EmailTemplateEditor\Model\TemplatePublisher"/>
+    <preference for="Hryvinskyi\EmailTemplateEditor\Api\TemplateDraftSaverInterface"
+                type="Hryvinskyi\EmailTemplateEditor\Model\TemplateDraftSaver"/>
     <preference for="Hryvinskyi\EmailTemplateEditor\Api\TemplateLoaderInterface"
                 type="Hryvinskyi\EmailTemplateEditor\Model\TemplateLoader"/>
     <preference for="Hryvinskyi\EmailTemplateEditor\Api\TemplateRendererInterface"
@@ -62,6 +64,14 @@
                 type="Hryvinskyi\EmailTemplateEditor\Model\EditorContextFlag"/>
     <preference for="Hryvinskyi\EmailTemplateEditor\Api\UtilityCssGeneratorInterface"
                 type="Hryvinskyi\EmailTemplateEditor\Model\UtilityCssGenerator"/>
+    <preference for="Hryvinskyi\EmailTemplateEditor\Api\TemplatePreviewFramerInterface"
+                type="Hryvinskyi\EmailTemplateEditor\Model\Preview\TemplatePreviewFramer"/>
+    <preference for="Hryvinskyi\EmailTemplateEditor\Api\PreviewPlaceholderInterface"
+                type="Hryvinskyi\EmailTemplateEditor\Model\Preview\PreviewPlaceholder"/>
+    <preference for="Hryvinskyi\EmailTemplateEditor\Api\ConfiguredTemplateResolverInterface"
+                type="Hryvinskyi\EmailTemplateEditor\Model\Preview\ConfiguredTemplateResolver"/>
+    <preference for="Hryvinskyi\EmailTemplateEditor\Api\Css\EmailStylesheetCollectorInterface"
+                type="Hryvinskyi\EmailTemplateEditor\Model\Css\EmailStylesheetCollector"/>
     <preference for="Hryvinskyi\EmailTemplateEditor\Api\ThemeJsonValidatorInterface"
                 type="Hryvinskyi\EmailTemplateEditor\Model\ThemeJsonValidator"/>
     <preference for="Hryvinskyi\EmailTemplateEditor\Api\VariableChooserProviderInterface"
@@ -548,6 +558,8 @@
             <argument name="fileName" xsi:type="string">email_variables.xml</argument>
             <argument name="converter" xsi:type="object">Hryvinskyi\EmailTemplateEditor\Model\Knowledge\Config\Converter</argument>
             <argument name="schemaLocator" xsi:type="object">Hryvinskyi\EmailTemplateEditor\Model\Knowledge\Config\SchemaLocator</argument>
+            <!-- An expression is template code, quotes and brackets included; see the class. -->
+            <argument name="domDocumentClass" xsi:type="string">Hryvinskyi\EmailTemplateEditor\Model\Knowledge\Config\Dom</argument>
             <argument name="idAttributes" xsi:type="array">
                 <item name="/variables/variable" xsi:type="array">
                     <item name="kind" xsi:type="string">kind</item>
@@ -702,4 +714,30 @@
                 type="Hryvinskyi\EmailTemplateEditor\Model\Css\CssSyntaxScanner"/>
     <preference for="Hryvinskyi\EmailTemplateEditor\Api\Css\CssStructureParserInterface"
                 type="Hryvinskyi\EmailTemplateEditor\Model\Css\CssStructureParser"/>
+
+    <!--
+        A header and a footer are previewed inside the email they belong to. Frames are keyed by the
+        configuration path a store includes the template by, so the store's own header is framed as
+        one whichever template that path points at.
+    -->
+    <virtualType name="HryvinskyiEmailTemplateEditorHeaderPreviewFrame"
+                 type="Hryvinskyi\EmailTemplateEditor\Model\Preview\SurroundingTemplatesFrame">
+        <arguments>
+            <argument name="trailingConfigPath" xsi:type="string">design/email/footer_template</argument>
+        </arguments>
+    </virtualType>
+    <virtualType name="HryvinskyiEmailTemplateEditorFooterPreviewFrame"
+                 type="Hryvinskyi\EmailTemplateEditor\Model\Preview\SurroundingTemplatesFrame">
+        <arguments>
+            <argument name="leadingConfigPath" xsi:type="string">design/email/header_template</argument>
+        </arguments>
+    </virtualType>
+    <type name="Hryvinskyi\EmailTemplateEditor\Model\Preview\TemplatePreviewFramer">
+        <arguments>
+            <argument name="frames" xsi:type="array">
+                <item name="design/email/header_template" xsi:type="object">HryvinskyiEmailTemplateEditorHeaderPreviewFrame</item>
+                <item name="design/email/footer_template" xsi:type="object">HryvinskyiEmailTemplateEditorFooterPreviewFrame</item>
+            </argument>
+        </arguments>
+    </type>
 </config>

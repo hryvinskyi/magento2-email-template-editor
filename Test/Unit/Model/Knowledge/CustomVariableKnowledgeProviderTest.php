@@ -25,7 +25,14 @@ class CustomVariableKnowledgeProviderTest extends TestCase
 {
     private const STORE_ID = 3;
 
-    private CustomVariableCollectionFactory&MockObject $collectionFactory;
+    /**
+     * @var CustomVariableCollectionFactory&MockObject
+     */
+    private MockObject $collectionFactory;
+
+    /**
+     * @var DirectiveReferenceParser
+     */
     private DirectiveReferenceParser $referenceParser;
 
     /**
@@ -133,7 +140,7 @@ class CustomVariableKnowledgeProviderTest extends TestCase
     /**
      * @return array<string, array{0: string}>
      */
-    public function otherKindProvider(): array
+    public static function otherKindProvider(): array
     {
         return [
             'a plain variable' => ['var:order.increment_id'],
@@ -265,8 +272,9 @@ class CustomVariableKnowledgeProviderTest extends TestCase
      * for the real class, addMethods() for the empty stand-in it declares in place of the missing
      * one. Deciding here keeps the suite runnable either way.
      *
-     * @param class-string $factoryClass
-     * @return MockObject
+     * @template T of object
+     * @param class-string<T> $factoryClass
+     * @return T&MockObject
      */
     private function createFactoryMock(string $factoryClass): MockObject
     {

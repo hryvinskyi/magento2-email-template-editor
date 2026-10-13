@@ -28,9 +28,24 @@ class TemplateVarsKnowledgeProviderTest extends TestCase
     private const TEMPLATE_ID = 'sales_email_order_template';
     private const STORE_ID = 3;
 
-    private TemplateVariableDeclarationsInterface&MockObject $declarations;
+    /**
+     * @var TemplateVariableDeclarationsInterface&MockObject
+     */
+    private MockObject $declarations;
+
+    /**
+     * @var DirectiveReferenceParser
+     */
     private DirectiveReferenceParser $referenceParser;
+
+    /**
+     * @var DescribeContext
+     */
     private DescribeContext $describeContext;
+
+    /**
+     * @var TemplateVarsKnowledgeProvider
+     */
     private TemplateVarsKnowledgeProvider $provider;
 
     /**
@@ -191,7 +206,7 @@ class TemplateVarsKnowledgeProviderTest extends TestCase
     /**
      * @return array<string, array{0: string}>
      */
-    public function otherKindProvider(): array
+    public static function otherKindProvider(): array
     {
         return [
             'a custom variable' => ['customVar:support_hours'],
@@ -330,10 +345,7 @@ class TemplateVarsKnowledgeProviderTest extends TestCase
         $template->method('loadDefault')->willReturn($template);
         $template->method('getData')->with('orig_template_variables')->willReturn($rawDeclarations);
 
-        $templateFactoryBuilder = $this->getMockBuilder(TemplateFactory::class)->disableOriginalConstructor();
-        $templateFactory = method_exists(TemplateFactory::class, 'create')
-            ? $templateFactoryBuilder->onlyMethods(['create'])->getMock()
-            : $templateFactoryBuilder->addMethods(['create'])->getMock();
+        $templateFactory = $this->createFactoryMock(TemplateFactory::class);
         $templateFactory->method('create')->willReturn($template);
 
         $context = new DescribeContext();
@@ -353,7 +365,7 @@ class TemplateVarsKnowledgeProviderTest extends TestCase
     /**
      * The canonical references of everything the provider lists
      *
-     * @return array<int, string>
+     * @return string[]
      */
     private function listedReferences(): array
     {
@@ -361,5 +373,26 @@ class TemplateVarsKnowledgeProviderTest extends TestCase
             static fn (VariableKnowledgeInterface $entry): string => $entry->getReference()->toCanonicalString(),
             $this->provider->listAll(self::STORE_ID)
         );
+    }
+
+    /**
+     * Build a mock for a factory that may only exist as a DI-generated class
+     *
+     * Such a factory is autoloadable on an installation where it has been generated and absent on
+     * one where it has not, and PHPUnit needs a different builder call for each case: onlyMethods()
+     * for the real class, addMethods() for the empty stand-in it declares in place of the missing
+     * one. Deciding here keeps the suite runnable either way.
+     *
+     * @template T of object
+     * @param class-string<T> $factoryClass
+     * @return T&MockObject
+     */
+    private function createFactoryMock(string $factoryClass): MockObject
+    {
+        $builder = $this->getMockBuilder($factoryClass)->disableOriginalConstructor();
+
+        return method_exists($factoryClass, 'create')
+            ? $builder->onlyMethods(['create'])->getMock()
+            : $builder->addMethods(['create'])->getMock();
     }
 }

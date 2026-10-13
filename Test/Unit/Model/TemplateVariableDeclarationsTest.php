@@ -21,10 +21,29 @@ class TemplateVariableDeclarationsTest extends TestCase
 {
     private const TEMPLATE_ID = 'sales_email_order_template';
 
-    private TemplateFactory&MockObject $templateFactory;
-    private Template&MockObject $template;
-    private PluginBypassFlagInterface&MockObject $pluginBypassFlag;
-    private LoggerInterface&MockObject $logger;
+    /**
+     * @var TemplateFactory&MockObject
+     */
+    private MockObject $templateFactory;
+
+    /**
+     * @var Template&MockObject
+     */
+    private MockObject $template;
+
+    /**
+     * @var PluginBypassFlagInterface&MockObject
+     */
+    private MockObject $pluginBypassFlag;
+
+    /**
+     * @var LoggerInterface&MockObject
+     */
+    private MockObject $logger;
+
+    /**
+     * @var TemplateVariableDeclarations
+     */
     private TemplateVariableDeclarations $declarations;
 
     /**
@@ -152,7 +171,7 @@ class TemplateVariableDeclarationsTest extends TestCase
     /**
      * @return array<string, array{0: string}>
      */
-    public function nothingDeclaredProvider(): array
+    public static function nothingDeclaredProvider(): array
     {
         return [
             'no annotation at all' => [''],
@@ -236,8 +255,9 @@ class TemplateVariableDeclarationsTest extends TestCase
      * for the real class, addMethods() for the empty stand-in it declares in place of the missing
      * one. Deciding here keeps the suite runnable either way.
      *
-     * @param class-string $factoryClass
-     * @return MockObject
+     * @template T of object
+     * @param class-string<T> $factoryClass
+     * @return T&MockObject
      */
     private function createFactoryMock(string $factoryClass): MockObject
     {

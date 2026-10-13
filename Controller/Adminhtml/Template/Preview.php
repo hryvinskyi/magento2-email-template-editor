@@ -12,6 +12,7 @@ namespace Hryvinskyi\EmailTemplateEditor\Controller\Adminhtml\Template;
 use Hryvinskyi\EmailTemplateEditor\Api\CustomVariableMergerInterface;
 use Hryvinskyi\EmailTemplateEditor\Api\SampleDataProviderPoolInterface;
 use Hryvinskyi\EmailTemplateEditor\Api\TemplateRendererInterface;
+use Hryvinskyi\EmailTemplateEditor\Controller\Adminhtml\ReadsRequestParameters;
 use Magento\Backend\App\Action;
 use Magento\Backend\App\Action\Context;
 use Magento\Framework\App\Action\HttpPostActionInterface;
@@ -19,9 +20,12 @@ use Magento\Framework\Controller\Result\Json;
 use Magento\Framework\Controller\Result\JsonFactory;
 use Magento\Framework\Controller\Result\RawFactory;
 use Magento\Framework\Controller\ResultInterface;
+use Magento\Framework\Escaper;
 
 class Preview extends Action implements HttpPostActionInterface
 {
+    use ReadsRequestParameters;
+
     public const ADMIN_RESOURCE = 'Hryvinskyi_EmailTemplateEditor::editor';
 
     /**
@@ -31,6 +35,7 @@ class Preview extends Action implements HttpPostActionInterface
      * @param TemplateRendererInterface $templateRenderer
      * @param SampleDataProviderPoolInterface $sampleDataProviderPool
      * @param CustomVariableMergerInterface $customVariableMerger
+     * @param Escaper $escaper
      */
     public function __construct(
         Context $context,
@@ -38,7 +43,8 @@ class Preview extends Action implements HttpPostActionInterface
         private readonly RawFactory $resultRawFactory,
         private readonly TemplateRendererInterface $templateRenderer,
         private readonly SampleDataProviderPoolInterface $sampleDataProviderPool,
-        private readonly CustomVariableMergerInterface $customVariableMerger
+        private readonly CustomVariableMergerInterface $customVariableMerger,
+        private readonly Escaper $escaper
     ) {
         parent::__construct($context);
     }
@@ -53,20 +59,14 @@ class Preview extends Action implements HttpPostActionInterface
         $isRaw = (bool)$this->getRequest()->getParam('raw', false);
 
         try {
-            $templateContent = (string)$this->getRequest()->getParam('template_content', '');
-            $templateIdentifier = (string)$this->getRequest()->getParam('template_identifier', '');
-            $storeId = (int)$this->getRequest()->getParam('store_id', 0);
-            $customCss = $this->getRequest()->getParam('custom_css');
-            $tailwindCss = $this->getRequest()->getParam('tailwind_css');
-            $themeCss = $this->getRequest()->getParam('theme_css');
-            $providerCode = (string)$this->getRequest()->getParam('provider_code', 'mock');
-            $entityId = $this->getRequest()->getParam('entity_id');
+            $templateContent = $this->stringParam('template_content');
+            $templateIdentifier = $this->stringParam('template_identifier');
+            $storeId = $this->intParam('store_id');
+            $providerCode = $this->stringParam('provider_code', 'mock');
 
             if ($templateContent === '') {
                 if ($isRaw) {
-                    return $this->resultRawFactory->create()
-                        ->setHeader('Content-Type', 'text/html')
-                        ->setContents('<p style="color:#eb5202;padding:20px;">Template content is required.</p>');
+                    return $this->rawResult('<p style="color:#eb5202;padding:20px;">Template content is required.</p>');
                 }
 
                 return $this->resultJsonFactory->create()->setData([
@@ -76,13 +76,14 @@ class Preview extends Action implements HttpPostActionInterface
             }
 
             $provider = $this->sampleDataProviderPool->getProvider($providerCode);
-            $entityIdValue = $entityId !== null && $entityId !== '' ? (string)$entityId : null;
-            $variables = $provider->getVariables($templateIdentifier, $storeId, $entityIdValue);
-
-            $customVariables = $this->getRequest()->getParam('custom_variables');
+            $variables = $provider->getVariables(
+                $templateIdentifier,
+                $storeId,
+                $this->optionalStringParam('entity_id')
+            );
             $variables = $this->customVariableMerger->merge(
                 $variables,
-                $customVariables !== null && $customVariables !== '' ? (string)$customVariables : null
+                $this->optionalStringParam('custom_variables')
             );
 
             $isMockData = $providerCode === 'mock';
@@ -91,17 +92,15 @@ class Preview extends Action implements HttpPostActionInterface
                 $templateContent,
                 $variables,
                 $storeId,
-                $customCss !== null && $customCss !== '' ? (string)$customCss : null,
-                $tailwindCss !== null && $tailwindCss !== '' ? (string)$tailwindCss : null,
+                $this->optionalStringParam('custom_css'),
+                $this->optionalStringParam('tailwind_css'),
                 $templateIdentifier !== '' ? $templateIdentifier : null,
                 $isMockData,
-                $themeCss !== null && $themeCss !== '' ? (string)$themeCss : null
+                $this->optionalStringParam('theme_css')
             );
 
             if ($isRaw) {
-                return $this->resultRawFactory->create()
-                    ->setHeader('Content-Type', 'text/html')
-                    ->setContents($html);
+                return $this->rawResult($html);
             }
 
             return $this->resultJsonFactory->create()->setData([
@@ -110,10 +109,8 @@ class Preview extends Action implements HttpPostActionInterface
             ]);
         } catch (\Exception $e) {
             if ($isRaw) {
-                return $this->resultRawFactory->create()
-                    ->setHeader('Content-Type', 'text/html')
-                    ->setContents('<p style="color:#eb5202;padding:20px;">Error: '
-                        . htmlspecialchars($e->getMessage()) . '</p>');
+                return $this->rawResult('<p style="color:#eb5202;padding:20px;">Error: '
+                    . $this->escaper->escapeHtmlAttr($e->getMessage(), false) . '</p>');
             }
 
             return $this->resultJsonFactory->create()->setData([
@@ -121,5 +118,24 @@ class Preview extends Action implements HttpPostActionInterface
                 'message' => $e->getMessage(),
             ]);
         }
+    }
+
+    /**
+     * The preview as a page of its own, opened in a new tab
+     *
+     * The email is markup any administrator with editor access wrote, and here it is served from
+     * the admin's own origin. The sandbox gives the page an origin of its own and runs no script,
+     * so nothing in a template can act with the session of whoever opens the preview.
+     *
+     * @param string $html
+     * @return ResultInterface
+     */
+    private function rawResult(string $html): ResultInterface
+    {
+        return $this->resultRawFactory->create()
+            ->setHeader('Content-Type', 'text/html; charset=UTF-8')
+            ->setHeader('Content-Security-Policy', 'sandbox')
+            ->setHeader('X-Content-Type-Options', 'nosniff')
+            ->setContents($html);
     }
 }

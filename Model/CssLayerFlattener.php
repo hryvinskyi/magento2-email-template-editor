@@ -24,6 +24,25 @@ class CssLayerFlattener implements CssLayerFlattenerInterface
     private const DROPPED_LAYER_NAME_PATTERN = '/\b(?:base|properties)\b/i';
 
     /**
+     * Tailwind source at-rules: input to the compiler, never CSS a mail client could use
+     *
+     * A stylesheet stored before the editor kept only the compiler's output may still carry the
+     * template's own `<style type="text/tailwindcss">` source - `@import "tailwindcss"`, `@theme`
+     * and the like. Left in, the import becomes a request for a file called "tailwindcss" and a
+     * statement the inliner's parser cannot place, which takes the rule after it out of the email.
+     */
+    private const TAILWIND_SOURCE_AT_RULES = [
+        'theme',
+        'source',
+        'plugin',
+        'config',
+        'utility',
+        'variant',
+        'custom-variant',
+        'reference',
+    ];
+
+    /**
      * At-rules whose blocks hold further rules, so a nested `@layer` can hide inside them
      */
     private const GROUP_AT_RULES = [
@@ -44,7 +63,7 @@ class CssLayerFlattener implements CssLayerFlattenerInterface
     }
 
     /**
-     * {@inheritDoc}
+     * @inheritDoc
      */
     public function flatten(string $css): string
     {
@@ -62,7 +81,7 @@ class CssLayerFlattener implements CssLayerFlattenerInterface
      * Walk a rule list, unwrapping layers and harvesting `@property` defaults as it goes
      *
      * @param string $css A stylesheet or the body of a group at-rule
-     * @param array<string, string> $propertyDefaults Collected registrations, name to initial value
+     * @param array<string,string> $propertyDefaults Collected registrations, name to initial value
      * @return string
      */
     private function flattenRuleList(string $css, array &$propertyDefaults): string
@@ -93,7 +112,7 @@ class CssLayerFlattener implements CssLayerFlattenerInterface
      *
      * @param string $selector Block selector or at-rule, statement at-rules already removed
      * @param string $body Block content without the surrounding braces
-     * @param array<string, string> $propertyDefaults Collected registrations, name to initial value
+     * @param array<string,string> $propertyDefaults Collected registrations, name to initial value
      * @return string
      */
     private function flattenBlock(string $selector, string $body, array &$propertyDefaults): string
@@ -111,6 +130,10 @@ class CssLayerFlattener implements CssLayerFlattenerInterface
             }
 
             return $this->flattenRuleList($body, $propertyDefaults);
+        }
+
+        if ($atRule !== null && in_array($atRule, self::TAILWIND_SOURCE_AT_RULES, true)) {
+            return '';
         }
 
         if ($atRule === 'property') {
@@ -143,7 +166,11 @@ class CssLayerFlattener implements CssLayerFlattenerInterface
         $result = '';
 
         foreach ($segments as $segment) {
-            if (preg_match('/^\s*@layer\b/i', $segment) === 1) {
+            // Tailwind opens its output with a `/*! tailwindcss … */` banner, so the statement is
+            // read past any comment in front of it.
+            $statement = preg_replace('#/\*.*?\*/#s', '', $segment) ?? $segment;
+
+            if (preg_match('/^\s*@layer\b/i', $statement) === 1 || $this->isTailwindSourceStatement($statement)) {
                 continue;
             }
 
@@ -151,6 +178,23 @@ class CssLayerFlattener implements CssLayerFlattenerInterface
         }
 
         return $result . $trailing;
+    }
+
+    /**
+     * Whether a statement at-rule is Tailwind source - `@import "tailwindcss"`, `@source "…"` and the like
+     *
+     * @param string $statement One statement, comments removed, without its terminating `;`
+     * @return bool
+     */
+    private function isTailwindSourceStatement(string $statement): bool
+    {
+        if (preg_match('/^\s*@import\s+(?:url\(\s*)?["\']tailwindcss["\']/i', $statement) === 1) {
+            return true;
+        }
+
+        $atRule = preg_match('/^\s*@([\w-]+)/', $statement, $matches) === 1 ? strtolower($matches[1]) : '';
+
+        return in_array($atRule, self::TAILWIND_SOURCE_AT_RULES, true);
     }
 
     /**
@@ -182,7 +226,7 @@ class CssLayerFlattener implements CssLayerFlattenerInterface
      *
      * @param string $selector Prelude opening the `@property` block
      * @param string $body Block content without the surrounding braces
-     * @param array<string, string> $propertyDefaults Collected registrations, name to initial value
+     * @param array<string,string> $propertyDefaults Collected registrations, name to initial value
      * @return void
      */
     private function harvestPropertyDefault(string $selector, string $body, array &$propertyDefaults): void
@@ -218,7 +262,7 @@ class CssLayerFlattener implements CssLayerFlattenerInterface
      * removes the rule block left empty behind them.
      *
      * @param string $css
-     * @param array<string, string> $propertyDefaults Map of custom property name to initial value
+     * @param array<string,string> $propertyDefaults Map of custom property name to initial value
      * @return string
      */
     private function prependPropertyDefaults(string $css, array $propertyDefaults): string

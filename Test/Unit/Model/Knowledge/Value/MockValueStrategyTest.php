@@ -179,8 +179,6 @@ class MockValueStrategyTest extends TestCase
         $strategy->resolve($this->entry('order.increment_id'), self::STORE_ID, self::TEMPLATE_ID);
         $strategy->resolve($this->entry('order.customer_name'), self::STORE_ID, self::TEMPLATE_ID);
         $strategy->resolve($this->entry('order.created_at'), self::STORE_ID, self::TEMPLATE_ID);
-
-        self::assertTrue(true, 'The expectation on the sample record builder is the assertion.');
     }
 
     public function testADifferentStoreViewGetsItsOwnSampleRecords(): void
@@ -191,8 +189,6 @@ class MockValueStrategyTest extends TestCase
         $strategy = $this->strategy();
         $strategy->resolve($this->entry('order.increment_id'), self::STORE_ID, self::TEMPLATE_ID);
         $strategy->resolve($this->entry('order.increment_id'), self::STORE_ID + 1, self::TEMPLATE_ID);
-
-        self::assertTrue(true, 'The expectation on the sample record builder is the assertion.');
     }
 
     /**
@@ -242,7 +238,7 @@ class MockValueStrategyTest extends TestCase
      *
      * @return array<string, array{0: string, 1: bool, 2: string}>
      */
-    public function realWalkerProvider(): array
+    public static function realWalkerProvider(): array
     {
         return [
             'a field with a value' => ['order.increment_id', true, '000000123'],

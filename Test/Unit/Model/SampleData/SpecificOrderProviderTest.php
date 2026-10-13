@@ -25,15 +25,30 @@ use Psr\Log\LoggerInterface;
 
 class SpecificOrderProviderTest extends TestCase
 {
-    private OrderCollectionFactory&MockObject $orderCollectionFactory;
-    private OrderCollection&MockObject $collection;
-    private LoggerInterface&MockObject $logger;
+    /**
+     * @var OrderCollectionFactory&MockObject
+     */
+    private MockObject $orderCollectionFactory;
+
+    /**
+     * @var OrderCollection&MockObject
+     */
+    private MockObject $collection;
+
+    /**
+     * @var LoggerInterface&MockObject
+     */
+    private MockObject $logger;
+
+    /**
+     * @var SpecificOrderProvider
+     */
     private SpecificOrderProvider $provider;
 
     /**
      * Every field/condition pair handed to the collection, in call order
      *
-     * @var array<int, array{0: string|string[], 1: mixed}>
+     * @var array<int, array{0: mixed, 1: mixed}>
      */
     private array $filters = [];
 
@@ -45,6 +60,11 @@ class SpecificOrderProviderTest extends TestCase
 
         $this->filters = [];
         $this->collection->method('addFieldToFilter')->willReturnCallback(
+            /**
+             * @param string|string[] $field
+             * @param mixed $condition
+             * @return OrderCollection
+             */
             function ($field, $condition = null) {
                 $this->filters[] = [$field, $condition];
 
@@ -81,7 +101,7 @@ class SpecificOrderProviderTest extends TestCase
     /**
      * @return array<string, array{0: string}>
      */
-    public function tooShortQueryDataProvider(): array
+    public static function tooShortQueryDataProvider(): array
     {
         return [
             'empty' => [''],
@@ -118,7 +138,8 @@ class SpecificOrderProviderTest extends TestCase
 
         $this->provider->searchEntities('a\\b', 0);
 
-        self::assertSame([['like' => '%a\\\\b%'], ['like' => '%a\\\\b%'], ['like' => '%a\\\\b%']], $this->filters[0][1]);
+        $pattern = ['like' => '%a\\\\b%'];
+        self::assertSame([$pattern, $pattern, $pattern], $this->filters[0][1]);
     }
 
     /**
@@ -141,7 +162,7 @@ class SpecificOrderProviderTest extends TestCase
     /**
      * @return array<string, array{0: string, 1: string}>
      */
-    public function orderNumberQueryDataProvider(): array
+    public static function orderNumberQueryDataProvider(): array
     {
         return [
             'digits' => ['100000', '100000%'],
@@ -186,7 +207,7 @@ class SpecificOrderProviderTest extends TestCase
     /**
      * @return array<string, array{0: string}>
      */
-    public function freeTextQueryDataProvider(): array
+    public static function freeTextQueryDataProvider(): array
     {
         return [
             'surname' => ['smith'],

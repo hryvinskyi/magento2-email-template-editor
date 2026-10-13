@@ -43,10 +43,19 @@ class ConfigAffordanceResolverTest extends TestCase
      */
     private const URL_PREFIX = 'https://shop.test/admin/system_config/edit/';
 
-    private Structure&MockObject $configStructure;
+    /**
+     * @var Structure&MockObject
+     */
+    private MockObject $configStructure;
 
-    private ConfigVariables&MockObject $configVariables;
+    /**
+     * @var ConfigVariables&MockObject
+     */
+    private MockObject $configVariables;
 
+    /**
+     * @var ConfigAffordanceResolver
+     */
     private ConfigAffordanceResolver $resolver;
 
     /**
@@ -61,15 +70,21 @@ class ConfigAffordanceResolverTest extends TestCase
         $url = $this->createMock(UrlInterface::class);
         $url->method('getUrl')->willReturnCallback(
             static function (string $route, array $params): string {
-                $fragment = $params['_fragment'] ?? '';
-                unset($params['_fragment']);
+                $fragment = '';
                 $query = [];
 
                 foreach ($params as $name => $value) {
+                    self::assertIsScalar($value, 'Every route parameter the resolver builds is a scalar.');
+
+                    if ($name === '_fragment') {
+                        $fragment = '#' . $value;
+                        continue;
+                    }
+
                     $query[] = $name . '/' . $value;
                 }
 
-                return self::URL_PREFIX . implode('/', $query) . ($fragment === '' ? '' : '#' . $fragment);
+                return self::URL_PREFIX . implode('/', $query) . $fragment;
             }
         );
 
@@ -118,7 +133,7 @@ class ConfigAffordanceResolverTest extends TestCase
     /**
      * @return array<string, array{string, string}>
      */
-    public function unclaimedOriginProvider(): array
+    public static function unclaimedOriginProvider(): array
     {
         return [
             'another origin kind' => [OriginInterface::KIND_CUSTOM_VARIABLE, 'my_code'],
@@ -277,7 +292,8 @@ class ConfigAffordanceResolverTest extends TestCase
     /**
      * Declare the store information group and one of its fields, leaving everything else undeclared.
      *
-     * @param array<string, mixed> $spec What the field declares
+     * @param array{label?: string, default?: bool, website?: bool, store?: bool, type?: string,
+     *              options?: array<int, mixed>} $spec What the field declares
      * @param string $fieldId Identifier of the field within the group
      * @return void
      */

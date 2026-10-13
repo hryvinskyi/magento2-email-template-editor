@@ -16,6 +16,11 @@ use PHPUnit\Framework\TestCase;
 
 class CssLayerFlattenerTest extends TestCase
 {
+    /**
+     * Flattener under test
+     *
+     * @var CssLayerFlattener
+     */
     private CssLayerFlattener $flattener;
 
     protected function setUp(): void
@@ -270,5 +275,40 @@ CSS;
         $out = $this->flattener->flatten($css);
 
         self::assertStringContainsString('--tw-content: url(data:image/svg+xml;base64,AAA);', $out);
+    }
+
+    /**
+     * Tailwind's output opens with a banner comment; the layer order statement after it still goes
+     *
+     * Left in, the inliner's parser reads the statement and the rule after it as one unknown
+     * at-rule, so that rule is never inlined.
+     */
+    public function testALayerStatementAfterTheTailwindBannerIsDropped(): void
+    {
+        $css = "/*! tailwindcss v4.3.3 | MIT License | https://tailwindcss.com */\n"
+            . "@layer properties;\n@layer theme, base, components, utilities;\n"
+            . "@layer utilities { .mb-11 { margin-bottom: 2.75rem; } }";
+
+        $out = $this->flattener->flatten($css);
+
+        self::assertStringNotContainsString('@layer', $out);
+        self::assertStringContainsString('.mb-11 { margin-bottom: 2.75rem; }', $out);
+    }
+
+    /**
+     * Tailwind source stored alongside the compiled output never reaches the inliner
+     */
+    public function testTailwindSourceIsDropped(): void
+    {
+        $css = "@import \"tailwindcss\";\n@theme { --color-primary: #131CCF; }\n"
+            . "@import url('https://fonts.example/a.css');\n"
+            . "@layer utilities { .p-4 { padding: 1rem; } }";
+
+        $out = $this->flattener->flatten($css);
+
+        self::assertStringNotContainsString('tailwindcss', $out);
+        self::assertStringNotContainsString('@theme', $out);
+        self::assertStringContainsString("@import url('https://fonts.example/a.css');", $out);
+        self::assertStringContainsString('.p-4 { padding: 1rem; }', $out);
     }
 }

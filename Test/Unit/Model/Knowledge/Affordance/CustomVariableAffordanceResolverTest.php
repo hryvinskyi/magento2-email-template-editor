@@ -25,8 +25,19 @@ class CustomVariableAffordanceResolverTest extends TestCase
 {
     private const STORE_ID = 3;
 
-    private CustomVariableIndexInterface&MockObject $customVariableIndex;
-    private UrlInterface&MockObject $urlBuilder;
+    /**
+     * @var CustomVariableIndexInterface&MockObject
+     */
+    private MockObject $customVariableIndex;
+
+    /**
+     * @var UrlInterface&MockObject
+     */
+    private MockObject $urlBuilder;
+
+    /**
+     * @var CustomVariableAffordanceResolver
+     */
     private CustomVariableAffordanceResolver $resolver;
 
     /**
@@ -59,7 +70,7 @@ class CustomVariableAffordanceResolverTest extends TestCase
     /**
      * @return array<string, array{0: string}>
      */
-    public function otherOriginKindProvider(): array
+    public static function otherOriginKindProvider(): array
     {
         return [
             'configuration' => [OriginInterface::KIND_CONFIG],
@@ -105,7 +116,10 @@ class CustomVariableAffordanceResolverTest extends TestCase
 
         $affordance = $this->resolver->resolve($this->entryFor('support_hours'), self::STORE_ID);
 
-        self::assertSame('https://example.test/admin/system_variable/edit/variable_id/7/store/3/', $affordance->getUrl());
+        self::assertSame(
+            'https://example.test/admin/system_variable/edit/variable_id/7/store/3/',
+            $affordance->getUrl()
+        );
     }
 
     /**

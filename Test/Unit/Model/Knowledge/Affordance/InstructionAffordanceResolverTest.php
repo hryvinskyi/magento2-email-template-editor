@@ -20,6 +20,9 @@ use PHPUnit\Framework\TestCase;
 
 class InstructionAffordanceResolverTest extends TestCase
 {
+    /**
+     * @var InstructionAffordanceResolver
+     */
     private InstructionAffordanceResolver $resolver;
 
     /**
@@ -89,7 +92,7 @@ class InstructionAffordanceResolverTest extends TestCase
     /**
      * @return array<string, array{0: string}>
      */
-    public function originKindProvider(): array
+    public static function originKindProvider(): array
     {
         return [
             'config' => [OriginInterface::KIND_CONFIG],

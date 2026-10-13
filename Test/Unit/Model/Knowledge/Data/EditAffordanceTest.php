@@ -164,7 +164,7 @@ class EditAffordanceTest extends TestCase
     /**
      * @return array<string, array{0: callable():EditAffordance}>
      */
-    public function unlabelledAffordanceProvider(): array
+    public static function unlabelledAffordanceProvider(): array
     {
         return [
             'link' => [static fn (): EditAffordance => EditAffordance::link('', 'https://example.test')],

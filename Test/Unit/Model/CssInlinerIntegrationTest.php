@@ -34,7 +34,18 @@ use Psr\Log\NullLogger;
  */
 class CssInlinerIntegrationTest extends TestCase
 {
+    /**
+     * The real generator turning a theme into utility CSS
+     *
+     * @var UtilityCssGenerator
+     */
     private UtilityCssGenerator $generator;
+
+    /**
+     * Inliner under test, built from the real pipeline stages
+     *
+     * @var CssInliner
+     */
     private CssInliner $inliner;
 
     protected function setUp(): void
@@ -49,7 +60,10 @@ class CssInlinerIntegrationTest extends TestCase
         $syntaxScanner = new CssSyntaxScanner();
         $structureParser = new CssStructureParser($syntaxScanner);
 
-        $this->generator = new UtilityCssGenerator(new CssStructureParser(new CssSyntaxScanner()), new CssSyntaxScanner());
+        $this->generator = new UtilityCssGenerator(
+            new CssStructureParser(new CssSyntaxScanner()),
+            new CssSyntaxScanner()
+        );
         $this->inliner = new CssInliner(
             new CssVariableResolver(
                 new CssColorConverter(new ColorParser(), new ColorMixer()),
@@ -249,50 +263,25 @@ CSS;
     }
 
     /**
-     * Reproduces the "included header" scenario: a parent email includes the header via
-     * `{{template config_path="design/email/header_template"}}`. At runtime the plugin
-     * embeds the header override's stored tailwind_css as a <style> block in the
-     * processed sub-template - that block is wrapped in @layer utilities {…} and uses
-     * var(--color-primary). The CssInliner must flatten + resolve embedded <style>
-     * blocks (not just the CSS parameters) so the override classes still inline.
+     * The document's own style blocks belong to the theme - the header's `{{css}}` output and the
+     * template's styles. The core filter inlines none of them and leaves them for the clients that
+     * read a style block, and the editor's pass must leave them exactly where they are too: lifting
+     * their rules into attributes would make the preview and the sent email disagree about every
+     * rule they carry.
      */
-    public function testEmbeddedStyleBlocksWithLayersAreFlattenedAndResolved(): void
+    public function testTheDocumentsOwnStyleBlocksAreNeitherInlinedNorRemoved(): void
     {
-        $assembledHtml = <<<'HTML'
-<table><tr><td class="header"><img class="invert"/></td></tr></table>
-<style type="text/css">
-@layer theme {
-  :root, :host { --color-primary: #131CCF; }
-}
-@layer utilities {
-  .invert {
-    --tw-invert: invert(100%);
-    filter: var(--tw-blur,) var(--tw-brightness,) var(--tw-invert,) var(--tw-sepia,);
-  }
-  .\!bg-primary { background-color: var(--color-primary) !important; }
-}
-@layer properties {
-  @supports ((-webkit-hyphens: none)) {
-    *, ::before, ::after { --tw-invert: initial; --tw-blur: initial; --tw-brightness: initial; --tw-sepia: initial; }
-  }
-}
-</style>
-<p class="!bg-primary">body</p>
+        $html = <<<'HTML'
+<html><head><style type="text/css">.header { color: #123456; }</style></head>
+<body><table><tr><td class="header"><img class="invert"/></td></tr></table></body></html>
 HTML;
+        $utilities = '@layer utilities { .invert { --tw-invert: invert(100%); filter: var(--tw-invert,); } }';
 
-        // Parent template has no Tailwind classes itself; the editor sends no tailwind_css.
-        $out = $this->inliner->inline($assembledHtml);
+        $out = $this->inliner->inline($html, null, $utilities);
 
-        self::assertMatchesRegularExpression(
-            '/<img class="invert"[^>]*style="[^"]*filter:\s*invert\(100%\)/i',
-            $out,
-            'invert class from embedded <style> must inline filter property'
-        );
-        self::assertMatchesRegularExpression(
-            '/<p[^>]*style="[^"]*background-color:\s*#131CCF/i',
-            $out,
-            '!bg-primary from embedded <style> must resolve --color-primary and inline'
-        );
+        self::assertMatchesRegularExpression('/<img class="invert"[^>]*style="[^"]*filter:\s*invert\(100%\)/i', $out);
+        self::assertStringContainsString('.header { color: #123456; }', $out);
+        self::assertDoesNotMatchRegularExpression('/<td[^>]*style="[^"]*#123456/i', $out);
     }
 
     /**
@@ -376,28 +365,6 @@ CSS;
     }
 
     /**
-     * The same precedence rule has to hold for the CSS that arrives as an embedded
-     * `<style>` block - the shape `EmailTemplatePlugin` produces for a header/footer
-     * override pulled into a parent template via `{{template config_path="…"}}`. The plugin
-     * promotes that block before embedding it, so it is already `!important` here.
-     */
-    public function testPromotedEmbeddedStyleBlockBeatsAlreadyInlinedTemplateStyles(): void
-    {
-        $assembledHtml = <<<'HTML'
-<style type="text/css">
-.text-black { color: #000000 !important; }
-</style>
-<a class="text-black" href="#" style="color: #e9501c; text-decoration: none;">About Us</a>
-HTML;
-
-        $out = $this->inliner->inline($assembledHtml);
-
-        // Emogrifier's CSS parser normalises #000000 down to its short form.
-        self::assertMatchesRegularExpression('/<a[^>]*style="[^"]*color:\s*#(?:000|000000)\b/i', $out);
-        self::assertDoesNotMatchRegularExpression('/<a[^>]*style="[^"]*color:\s*#e9501c/i', $out);
-    }
-
-    /**
      * Only the editor's own CSS is promoted. A base-template `<style>` block travelling in
      * the markup keeps stock precedence, so it must not start overriding the inline styles
      * Magento produced for templates that carry no editor CSS.
@@ -411,7 +378,7 @@ a { color: #123456; }
 <a href="#" style="color: #e9501c;">About Us</a>
 HTML;
 
-        $out = $this->inliner->inline($assembledHtml);
+        $out = $this->inliner->inline($assembledHtml, null, '.unrelated { color: #a10c0c; }');
 
         self::assertMatchesRegularExpression('/<a[^>]*style="[^"]*color:\s*#e9501c/i', $out);
     }
@@ -594,7 +561,7 @@ CSS;
 
         self::assertFalse(mb_check_encoding($html, 'UTF-8'), 'The fixture must not be valid UTF-8');
 
-        $out = $this->inliner->inline($html);
+        $out = $this->inliner->inline($html, null, '.unrelated { color: #000000; }');
 
         self::assertStringContainsString('@media (max-width: 600px)', $out);
         self::assertStringContainsString('color: #a10c0c', $out);

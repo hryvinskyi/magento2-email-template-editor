@@ -68,21 +68,45 @@ class ConfigValueWriteStrategyTest extends TestCase
         self::BASE_URL_PATH,
     ];
 
-    private Structure&MockObject $configStructure;
+    /**
+     * @var Structure&MockObject
+     */
+    private MockObject $configStructure;
 
-    private ConfigVariables&MockObject $configVariables;
+    /**
+     * @var ConfigVariables&MockObject
+     */
+    private MockObject $configVariables;
 
-    private PreparedValueFactory&MockObject $preparedValueFactory;
+    /**
+     * @var PreparedValueFactory&MockObject
+     */
+    private MockObject $preparedValueFactory;
 
-    private ConfigResource&MockObject $configResource;
+    /**
+     * @var ConfigResource&MockObject
+     */
+    private MockObject $configResource;
 
-    private TypeListInterface&MockObject $cacheTypeList;
+    /**
+     * @var TypeListInterface&MockObject
+     */
+    private MockObject $cacheTypeList;
 
-    private AuthSession&MockObject $authSession;
+    /**
+     * @var AuthSession&MockObject
+     */
+    private MockObject $authSession;
 
-    private LoggerInterface&MockObject $logger;
+    /**
+     * @var LoggerInterface&MockObject
+     */
+    private MockObject $logger;
 
-    private MessageManagerInterface&MockObject $messageManager;
+    /**
+     * @var MessageManagerInterface&MockObject
+     */
+    private MockObject $messageManager;
 
     /**
      * Failures the strategy logged during the test under way, in the order it logged them
@@ -584,7 +608,7 @@ class ConfigValueWriteStrategyTest extends TestCase
     /**
      * @return array<string, array{int}>
      */
-    public function scopeProvider(): array
+    public static function scopeProvider(): array
     {
         return [
             'default scope' => [0],

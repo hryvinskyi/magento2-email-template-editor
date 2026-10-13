@@ -12,6 +12,7 @@ namespace Hryvinskyi\EmailTemplateEditor\Controller\Adminhtml\Template;
 use Hryvinskyi\EmailTemplateEditor\Api\CustomVariableMergerInterface;
 use Hryvinskyi\EmailTemplateEditor\Api\SampleDataProviderPoolInterface;
 use Hryvinskyi\EmailTemplateEditor\Api\TemplateRendererInterface;
+use Hryvinskyi\EmailTemplateEditor\Controller\Adminhtml\ReadsRequestParameters;
 use Magento\Backend\App\Action;
 use Magento\Backend\App\Action\Context;
 use Magento\Framework\App\Action\HttpPostActionInterface;
@@ -26,6 +27,8 @@ use Psr\Log\LoggerInterface;
 
 class SendTestEmail extends Action implements HttpPostActionInterface
 {
+    use ReadsRequestParameters;
+
     public const ADMIN_RESOURCE = 'Hryvinskyi_EmailTemplateEditor::editor';
 
     /**
@@ -72,15 +75,12 @@ class SendTestEmail extends Action implements HttpPostActionInterface
         $resultJson = $this->resultJsonFactory->create();
 
         try {
-            $recipientEmail = trim((string)$this->getRequest()->getParam('recipient_email', ''));
-            $templateContent = (string)$this->getRequest()->getParam('template_content', '');
-            $templateSubject = (string)$this->getRequest()->getParam('template_subject', '');
-            $templateIdentifier = (string)$this->getRequest()->getParam('template_identifier', '');
-            $storeId = (int)$this->getRequest()->getParam('store_id', 0);
-            $customCss = $this->getRequest()->getParam('custom_css');
-            $tailwindCss = $this->getRequest()->getParam('tailwind_css');
-            $providerCode = (string)$this->getRequest()->getParam('provider_code', 'mock');
-            $entityId = $this->getRequest()->getParam('entity_id');
+            $recipientEmail = trim($this->stringParam('recipient_email'));
+            $templateContent = $this->stringParam('template_content');
+            $templateSubject = $this->stringParam('template_subject');
+            $templateIdentifier = $this->stringParam('template_identifier');
+            $storeId = $this->intParam('store_id');
+            $providerCode = $this->stringParam('provider_code', 'mock');
 
             if ($recipientEmail === '' || !filter_var($recipientEmail, FILTER_VALIDATE_EMAIL)) {
                 return $resultJson->setData([
@@ -97,24 +97,29 @@ class SendTestEmail extends Action implements HttpPostActionInterface
             }
 
             $provider = $this->sampleDataProviderPool->getProvider($providerCode);
-            $entityIdValue = $entityId !== null && $entityId !== '' ? (string)$entityId : null;
-            $variables = $provider->getVariables($templateIdentifier, $storeId, $entityIdValue);
-
-            $customVariables = $this->getRequest()->getParam('custom_variables');
+            $variables = $provider->getVariables(
+                $templateIdentifier,
+                $storeId,
+                $this->optionalStringParam('entity_id')
+            );
             $variables = $this->customVariableMerger->merge(
                 $variables,
-                $customVariables !== null && $customVariables !== '' ? (string)$customVariables : null
+                $this->optionalStringParam('custom_variables')
             );
 
-            $emailStoreId = $storeId > 0 ? $storeId : (int)$this->storeManager->getDefaultStoreView()->getId();
+            $emailStoreId = $storeId > 0
+                ? $storeId
+                : (int)($this->storeManager->getDefaultStoreView()?->getId() ?? 0);
 
             $html = $this->templateRenderer->render(
                 $templateContent,
                 $variables,
                 $storeId,
-                $customCss !== null && $customCss !== '' ? (string)$customCss : null,
-                $tailwindCss !== null && $tailwindCss !== '' ? (string)$tailwindCss : null,
-                $templateIdentifier !== '' ? $templateIdentifier : null
+                $this->optionalStringParam('custom_css'),
+                $this->optionalStringParam('tailwind_css'),
+                $templateIdentifier !== '' ? $templateIdentifier : null,
+                $providerCode === 'mock',
+                $this->optionalStringParam('theme_css')
             );
 
             $processedSubject = $templateSubject !== ''
@@ -122,16 +127,8 @@ class SendTestEmail extends Action implements HttpPostActionInterface
                 : '';
             $subject = '[TEST] ' . ($processedSubject !== '' ? $processedSubject : 'Email Template Preview');
 
-            $senderEmail = $this->scopeConfig->getValue(
-                'trans_email/ident_general/email',
-                ScopeInterface::SCOPE_STORE,
-                $emailStoreId
-            ) ?: 'no-reply@example.com';
-            $senderName = $this->scopeConfig->getValue(
-                'trans_email/ident_general/name',
-                ScopeInterface::SCOPE_STORE,
-                $emailStoreId
-            ) ?: 'Store';
+            $senderEmail = $this->storeText('trans_email/ident_general/email', $emailStoreId, 'no-reply@example.com');
+            $senderName = $this->storeText('trans_email/ident_general/name', $emailStoreId, 'Store');
 
             $transport = $this->transportBuilder
                 ->setTemplateIdentifier(self::TEST_TEMPLATE_ID)
@@ -163,5 +160,20 @@ class SendTestEmail extends Action implements HttpPostActionInterface
                 'message' => (string)__('Failed to send test email: %1', $e->getMessage()),
             ]);
         }
+    }
+
+    /**
+     * A store's text configuration value, or the fallback when it has none
+     *
+     * @param string $path
+     * @param int $storeId
+     * @param string $fallback
+     * @return string
+     */
+    private function storeText(string $path, int $storeId, string $fallback): string
+    {
+        $value = $this->scopeConfig->getValue($path, ScopeInterface::SCOPE_STORE, $storeId);
+
+        return is_string($value) && $value !== '' ? $value : $fallback;
     }
 }

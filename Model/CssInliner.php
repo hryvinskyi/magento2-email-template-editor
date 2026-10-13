@@ -33,7 +33,7 @@ class CssInliner implements CssInlinerInterface
     }
 
     /**
-     * {@inheritDoc}
+     * @inheritDoc
      */
     public function inline(
         string $html,
@@ -41,20 +41,15 @@ class CssInliner implements CssInlinerInterface
         ?string $tailwindCss = null,
         ?string $themeCss = null
     ): string {
-        // Theme → tailwind → custom, matching EmailTemplatePlugin::buildCombinedCss so the
-        // preview resolves conflicts exactly like the sent email does. Order is load-bearing:
+        // Theme → tailwind → custom, the tier order the email's stylesheet is collected in.
+        // Order is load-bearing:
         // the parts are promoted to !important below, so between two equally specific rules
         // the later one wins - and hand-written custom CSS should always have the last say.
         $cssParts = array_filter([$themeCss, $tailwindCss, $customCss], static function (?string $css): bool {
             return $css !== null && trim($css) !== '';
         });
 
-        // Even when no external CSS parts are supplied, the HTML itself may carry embedded
-        // <style> blocks (e.g. from an included header override's stored tailwind_css that
-        // got embedded as a <style> by the plugin's afterGetProcessedTemplate). Run through
-        // Emogrifier so those embedded styles are flattened and inlined.
-        $hasEmbeddedStyles = stripos($html, '<style') !== false;
-        if (empty($cssParts) && !$hasEmbeddedStyles) {
+        if ($cssParts === []) {
             return $html;
         }
 
@@ -73,14 +68,11 @@ class CssInliner implements CssInlinerInterface
         $combinedCss = $this->importantPromoter->promote($combinedCss);
         $combinedCss = $this->rewriteEscapedClassSelectors($combinedCss);
 
-        // Inline <style> blocks embedded in the HTML may themselves be wrapped in @layer
-        // (this happens when an override's stored tailwind_css is embedded as a <style>
-        // tag during template processing of an included header/footer). Flatten the page's
-        // own style blocks too so Emogrifier can see their rules.
-        $html = $this->flattenStyleBlocksInHtml($html);
-
         try {
+            // The document's own style blocks are the theme's: the core filter leaves them in place
+            // for the clients that read them and never inlines them, so neither does this pass.
             return EmogrifierCssInliner::fromHtml($html)
+                ->disableStyleBlocksParsing()
                 ->inlineCss($combinedCss)
                 ->render();
         } catch (\Exception $e) {
@@ -90,40 +82,6 @@ class CssInliner implements CssInlinerInterface
 
             return $html;
         }
-    }
-
-    /**
-     * Run layer flattening and variable resolution over every `<style>` block in the HTML
-     *
-     * Embedded `<style>` blocks may originate from an included override that the plugin
-     * embedded during template processing - in which case the block carries the override's
-     * stored tailwind_css, complete with `@layer` wrappers and `var()` references. Neither
-     * is something Emogrifier handles, so we run the same flatten + resolve pipeline that
-     * external CSS parameters get.
-     *
-     * Deliberately *not* promoted to `!important` here: the plugin already promotes the
-     * blocks it embeds, while the surrounding markup's other `<style>` blocks belong to the
-     * base template - flagging those would invert the stock cascade for templates that carry
-     * no editor CSS at all.
-     *
-     * @param string $html
-     * @return string
-     */
-    private function flattenStyleBlocksInHtml(string $html): string
-    {
-        $rewritten = preg_replace_callback(
-            '/(<style[^>]*>)(.*?)(<\/style>)/is',
-            function (array $matches): string {
-                $css = $this->layerFlattener->flatten($matches[2]);
-                $css = $this->cssVariableResolver->resolve($css);
-                $css = $this->rewriteEscapedClassSelectors($css);
-
-                return $matches[1] . $css . $matches[3];
-            },
-            $html
-        );
-
-        return $rewritten ?? $this->reportPcreFailure('flattening embedded <style> blocks', $html);
     }
 
     /**
@@ -176,7 +134,7 @@ class CssInliner implements CssInlinerInterface
             static function (array $matches): string {
                 $className = preg_replace('/\\\\(.)/', '$1', $matches[1]) ?? $matches[1];
 
-                return '[class~="' . addcslashes($className, '"\\') . '"]';
+                return '[class~="' . str_replace(['\\', '"'], ['\\\\', '\\"'], $className) . '"]';
             },
             $selector
         );

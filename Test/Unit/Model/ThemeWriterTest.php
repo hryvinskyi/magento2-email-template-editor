@@ -15,7 +15,6 @@ use Hryvinskyi\EmailTemplateEditor\Api\ThemeJsonValidatorInterface;
 use Hryvinskyi\EmailTemplateEditor\Api\ThemeRepositoryInterface;
 use Hryvinskyi\EmailTemplateEditor\Model\ThemeWriter;
 use Magento\Framework\Exception\LocalizedException;
-use PHPUnit\Framework\ExpectationFailedException;
 use PHPUnit\Framework\MockObject\MockObject;
 use PHPUnit\Framework\TestCase;
 
@@ -23,11 +22,37 @@ class ThemeWriterTest extends TestCase
 {
     private const VALID_CSS = '@theme { --color-primary: #131CCF; }';
 
-    private ThemeRepositoryInterface&MockObject $themeRepository;
-    private ThemeJsonValidatorInterface&MockObject $themeJsonValidator;
-    private ThemeFactoryInterface&MockObject $themeFactory;
-    private ThemeInterface&MockObject $theme;
+    /**
+     * @var ThemeRepositoryInterface&MockObject
+     */
+    private MockObject $themeRepository;
+
+    /**
+     * @var ThemeJsonValidatorInterface&MockObject
+     */
+    private MockObject $themeJsonValidator;
+
+    /**
+     * @var ThemeFactoryInterface&MockObject
+     */
+    private MockObject $themeFactory;
+
+    /**
+     * @var ThemeInterface&MockObject
+     */
+    private MockObject $theme;
+
+    /**
+     * @var ThemeWriter
+     */
     private ThemeWriter $writer;
+
+    /**
+     * Every theme setter called through recordWrites(), in call order
+     *
+     * @var string[]
+     */
+    private array $writes = [];
 
     protected function setUp(): void
     {
@@ -64,18 +89,18 @@ class ThemeWriterTest extends TestCase
         $this->themeJsonValidator->method('validate')->willReturn(true);
         $this->themeRepository->method('getById')->with(7)->willReturn($this->theme);
 
-        $this->theme->expects(self::never())->method('setStoreId');
+        $this->recordWrites(['setStoreId']);
 
-        try {
-            $this->writer->updateContent(7, self::VALID_CSS, 'Renamed');
-        } catch (ExpectationFailedException) {
-            self::fail(
-                'updateContent() wrote store_id. Updating authored content must never move a theme '
-                . 'between store scopes: the default theme is resolved with store_id IN (0, <current '
-                . 'store>), so a theme moved off the global scope stops every other store resolving '
-                . 'a theme at all.'
-            );
-        }
+        $this->writer->updateContent(7, self::VALID_CSS, 'Renamed');
+
+        self::assertSame(
+            [],
+            $this->writes,
+            'updateContent() wrote store_id. Updating authored content must never move a theme '
+            . 'between store scopes: the default theme is resolved with store_id IN (0, <current '
+            . 'store>), so a theme moved off the global scope stops every other store resolving '
+            . 'a theme at all.'
+        );
     }
 
     public function testUpdateContentSavesTheLoadedThemeAndReturnsIt(): void
@@ -180,7 +205,7 @@ class ThemeWriterTest extends TestCase
      *
      * @return array<string, array{0: string|null}>
      */
-    public function unsuppliedNameProvider(): array
+    public static function unsuppliedNameProvider(): array
     {
         return [
             'empty string, as the admin controller sends' => [''],
@@ -203,19 +228,17 @@ class ThemeWriterTest extends TestCase
     {
         $this->givenLoadedTheme(7, false, 0);
 
-        $this->theme->expects(self::never())->method('setThemeCss');
-        $this->theme->expects(self::never())->method('setName');
-        $this->theme->expects(self::never())->method('setIsDefault');
+        $this->recordWrites(['setThemeCss', 'setName', 'setIsDefault']);
 
-        try {
-            $this->writer->changeScope(7, 5);
-        } catch (ExpectationFailedException) {
-            self::fail(
-                'changeScope() wrote authored content. Moving a theme between store scopes and '
-                . 'editing what it contains are separate intents, and neither may perform the '
-                . "other's effect."
-            );
-        }
+        $this->writer->changeScope(7, 5);
+
+        self::assertSame(
+            [],
+            $this->writes,
+            'changeScope() wrote authored content. Moving a theme between store scopes and '
+            . 'editing what it contains are separate intents, and neither may perform the '
+            . "other's effect."
+        );
     }
 
     public function testChangeScopeStoresTheGivenScopeAndReturnsTheTheme(): void
@@ -285,5 +308,24 @@ class ThemeWriterTest extends TestCase
         $this->theme->method('getStoreId')->willReturn($storeId);
 
         $this->themeRepository->method('getById')->with($themeId)->willReturn($this->theme);
+    }
+
+    /**
+     * Record every call the theme receives to the given setters, by setter name
+     *
+     * @param string[] $setters
+     * @return void
+     */
+    private function recordWrites(array $setters): void
+    {
+        foreach ($setters as $setter) {
+            $this->theme->method($setter)->willReturnCallback(
+                function () use ($setter): ThemeInterface {
+                    $this->writes[] = $setter;
+
+                    return $this->theme;
+                }
+            );
+        }
     }
 }

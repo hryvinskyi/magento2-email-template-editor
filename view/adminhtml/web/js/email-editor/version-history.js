@@ -11,8 +11,9 @@ define([
     'mage/translate',
     'emailEditorDiffEngine',
     'Hryvinskyi_EmailTemplateEditor/js/email-editor/parent-resolver',
-    'Hryvinskyi_EmailTemplateEditor/js/email-editor/failure-reporter'
-], function (Component, ko, $, $t, DiffEngine, parentResolver, failureReporter) {
+    'Hryvinskyi_EmailTemplateEditor/js/email-editor/failure-reporter',
+    'Hryvinskyi_EmailTemplateEditor/js/email-editor/html-text'
+], function (Component, ko, $, $t, DiffEngine, parentResolver, failureReporter, htmlText) {
     'use strict';
 
     return Component.extend({
@@ -42,6 +43,12 @@ define([
 
             this._currentIdentifier = '';
             this._currentStoreId = 0;
+
+            // One generation per kind of request, so only the newest preview and the newest
+            // comparison may change the screen: an answer to a version the user has already
+            // clicked past arrives later than the one they are looking at often enough.
+            this._previewToken = 0;
+            this._diffToken = 0;
 
             return this;
         },
@@ -110,7 +117,8 @@ define([
          * @param {Object} entry
          */
         previewVersion: function (entry) {
-            var self = this;
+            var self = this,
+                token = ++this._previewToken;
 
             this.activePreviewId(entry.version_id);
             this.trigger('historyPreviewStart');
@@ -118,6 +126,10 @@ define([
             this._ajax(this.urls.versionPreview, 'POST', {
                 version_id: entry.version_id
             }).done(function (res) {
+                if (token !== self._previewToken) {
+                    return;
+                }
+
                 self.trigger('historyPreview', res);
 
                 if (!res.success) {
@@ -125,6 +137,11 @@ define([
                     self._showMessage(res.message || $t('This version could not be previewed.'));
                 }
             }).fail(function (xhr, textStatus) {
+                // A superseded request leaves the overlay to the newer one that raised it.
+                if (token !== self._previewToken) {
+                    return;
+                }
+
                 // The preview overlay was raised before this request went out and only
                 // this event lowers it again, so it has to be fired on every ending -
                 // otherwise a failure leaves the preview spinning with nothing coming.
@@ -146,6 +163,7 @@ define([
          */
         showVersionDiff: function (entry) {
             var self = this,
+                token = ++this._diffToken,
                 entries = this.entries(),
                 currentIndex = -1,
                 previousEntry = null,
@@ -174,6 +192,10 @@ define([
                 version_id_a: previousEntry.version_id,
                 version_id_b: entry.version_id
             }).done(function (res) {
+                if (token !== self._diffToken) {
+                    return;
+                }
+
                 if (!res.success) {
                     self._showMessage(res.message || $t('This comparison could not be built.'));
 
@@ -226,7 +248,7 @@ define([
                 self.diffLabel('v' + entry.version_number + ' changes');
                 self.showDiff(true);
             }).fail(function (xhr, textStatus) {
-                if (failureReporter.isAbort(textStatus)) {
+                if (token !== self._diffToken || failureReporter.isAbort(textStatus)) {
                     return;
                 }
 
@@ -252,8 +274,10 @@ define([
             this.trigger('confirmAction', {
                 title: $.mage.__('Restore Version'),
                 message: $.mage.__('Restore version v') + entry.version_number + $.mage.__('? This will create a new draft with this content.'),
+                // Plain text: the dialog binds it as text, so markup here would be shown as
+                // its own source, and the comment is free text an administrator typed.
                 detail: entry.version_comment
-                    ? '<strong>' + $.mage.__('Comment:') + '</strong> ' + entry.version_comment
+                    ? $.mage.__('Comment:') + ' ' + entry.version_comment
                     : '',
                 actionLabel: $.mage.__('Restore'),
                 type: 'primary',
@@ -341,11 +365,7 @@ define([
          * @return {string}
          */
         _escapeHtml: function (str) {
-            var div = document.createElement('div');
-
-            div.appendChild(document.createTextNode(str));
-
-            return div.innerHTML;
+            return htmlText.escape(str);
         }
     });
 });

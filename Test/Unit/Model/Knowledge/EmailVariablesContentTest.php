@@ -9,64 +9,50 @@ declare(strict_types=1);
 
 namespace Hryvinskyi\EmailTemplateEditor\Test\Unit\Model\Knowledge;
 
-use DOMDocument;
-use DOMElement;
-use DOMNodeList;
-use DOMXPath;
 use Hryvinskyi\EmailTemplateEditor\Api\Data\Knowledge\EditAffordanceInterface;
 use Hryvinskyi\EmailTemplateEditor\Api\Data\Knowledge\OriginInterface;
+use Hryvinskyi\EmailTemplateEditor\Api\Data\Knowledge\VariableKnowledgeInterface;
+use Hryvinskyi\EmailTemplateEditor\Api\Knowledge\ConfigPathReadabilityInterface;
+use Hryvinskyi\EmailTemplateEditor\Api\Knowledge\DirectiveReferenceParserInterface;
+use Hryvinskyi\EmailTemplateEditor\Api\Knowledge\VariableKnowledgeProviderInterface;
 use Hryvinskyi\EmailTemplateEditor\Model\Knowledge\DirectiveReferenceParser;
+use Hryvinskyi\EmailTemplateEditor\Model\SampleData\TemplateProviderMapping;
+use Hryvinskyi\EmailTemplateEditor\Test\Unit\Container\ModuleContainer;
+use Hryvinskyi\EmailTemplateEditor\Test\Unit\Container\ReadsEmailVariablesConfiguration;
 use PHPUnit\Framework\TestCase;
+use Psr\Log\LoggerInterface;
+use ReflectionClass;
 
 /**
- * Guards the content of the shipped knowledge file, which the schema cannot judge.
+ * What the shipped knowledge answers, read the way an installation reads it.
  *
- * The schema says an entry is well formed. It cannot say whether an entry is true, and it cannot say
- * whether the file still covers what the editor is used on. The checks here are the ones that turn a
- * silent content mistake into a failing build:
+ * The file is read by Magento's own reader, validated against the module's schema in developer mode,
+ * converted by the module's converter and answered by the module's provider, so every check below is
+ * about what an administrator is shown and not about how the file is laid out:
  *
- * - nothing is described twice, so an administrator reading an entry is reading the only one;
+ * - the file loads and nothing in it is refused, so no entry or edit route silently disappears;
  * - nothing is described emptily, so a popover never opens on blank prose;
- * - a link is an admin route and never a finished address, because an administration URL carries a
- *   key belonging to the session it was built in and a literal one is dead before anybody follows it;
+ * - every link opens an administration route that was looked up on an installation;
  * - a value the sending code assigns offers written steps rather than a link, because no page in the
- *   administration edits it and a link would take an administrator somewhere that cannot help;
- * - every caveat and every step carries an identifier, because a module adding one to a variable that
- *   already has several is merged alongside them only when both sides are identified, and without it
- *   the merge of the whole configuration fails;
- * - every family of messages the module knows how to preview has at least one entry, so a family
- *   dropped while the file was being written fails by name instead of quietly going undocumented.
+ *   administration edits it;
+ * - another module can add a caveat or a step to any entry and both are shown, beside what is shipped;
+ * - every family of messages the editor previews, and every directive kind, has an entry;
+ * - an entry about a configuration path an email cannot read says that it renders empty.
  */
 class EmailVariablesContentTest extends TestCase
 {
+    use ReadsEmailVariablesConfiguration;
+
     /**
-     * Admin route front names a link affordance may open
-     *
-     * The first segment of a route is what decides which application the link lands in. Restricting it
-     * to the administration's own front names is what makes "a link is a route" checkable: a storefront
-     * route, an absolute address or a bare path all fail here.
-     *
-     * Derived from the full routes below rather than written out a second time: a route that has to
-     * be one of those cannot have a front name they do not carry, and two lists stating the same
-     * thing only stay in agreement until somebody edits one of them.
-     *
-     * @return string[]
+     * The store view links are built for, so a scope-aware link carries its scope
      */
-    private function allowedRouteFrontNames(): array
-    {
-        return array_values(array_unique(array_map(
-            static fn (string $route): string => explode('/', $route)[0],
-            self::ALLOWED_ROUTES
-        )));
-    }
+    private const STORE_ID = 1;
 
     /**
      * One directive every family of messages must have an entry for
      *
-     * The families are read from the module's own template-to-group mapping rather than written out
-     * here, so a family added to that mapping without a word being written about it fails by name. The
-     * expression beside each family is a variable that only that family's messages carry, which is why
-     * finding it is evidence the family is covered.
+     * The expression beside each family is a variable that only that family's messages carry, which
+     * is why finding it is evidence the family is covered.
      *
      * @var array<string, string>
      */
@@ -83,18 +69,11 @@ class EmailVariablesContentTest extends TestCase
     ];
 
     /**
-     * Name of the type whose mapping decides which families the editor can preview
-     */
-    private const TEMPLATE_MAPPING_TYPE =
-        'Hryvinskyi\EmailTemplateEditor\Model\SampleData\TemplateProviderMapping';
-
-    /**
      * The whole route a link affordance may open
      *
-     * Every one of these was looked up in a routes.xml and found to have a controller behind it on
-     * this installation. Checking the front name alone would still let a typo in the controller or
-     * the action through, and a link that opens a page which does not exist is worse than no link:
-     * an administrator reads it as the feature being broken rather than as the entry being wrong.
+     * Every one of these was looked up in a routes.xml and found to have a controller behind it on an
+     * installation. A link that opens a page which does not exist is worse than no link: an
+     * administrator reads it as the feature being broken rather than as the entry being wrong.
      *
      * @var string[]
      */
@@ -105,161 +84,104 @@ class EmailVariablesContentTest extends TestCase
     ];
 
     /**
-     * The configuration paths a {{config}} directive can read
-     *
-     * The email template filter reads this fixed list and renders every other path as an empty
-     * string without a word of complaint, so an entry describing a path outside it is describing
-     * something that never appears in a message. The list is repeated here because these tests do
-     * not boot Magento; a second check compares this copy against the wiring it mirrors, so the two
-     * cannot drift apart unnoticed.
-     *
-     * @var string[]
-     */
-    private const READABLE_CONFIG_PATHS = [
-        'web/unsecure/base_url',
-        'web/secure/base_url',
-        'trans_email/ident_general/name',
-        'trans_email/ident_general/email',
-        'trans_email/ident_sales/name',
-        'trans_email/ident_sales/email',
-        'trans_email/ident_support/name',
-        'trans_email/ident_support/email',
-        'trans_email/ident_custom1/name',
-        'trans_email/ident_custom1/email',
-        'trans_email/ident_custom2/name',
-        'trans_email/ident_custom2/email',
-        'general/store_information/name',
-        'general/store_information/phone',
-        'general/store_information/hours',
-        'general/store_information/country_id',
-        'general/store_information/region_id',
-        'general/store_information/postcode',
-        'general/store_information/city',
-        'general/store_information/street_line1',
-        'general/store_information/street_line2',
-        'general/store_information/merchant_vat_number',
-    ];
-
-    /**
      * Wording an entry about an unreadable configuration path has to contain
      *
-     * Deliberately loose: what is being checked is that the entry warns at all, not that it warns in
-     * one particular sentence. The wording is meant to be edited; the warning is not.
+     * Deliberately loose: what is checked is that the entry warns at all, not that it warns in one
+     * particular sentence. The wording is meant to be edited; the warning is not.
      */
     private const EMPTY_RENDER_PHRASE = 'empty string';
 
     /**
-     * Where the wiring that decides the readable paths lives, relative to this module's neighbours
+     * Caveat and step a contributing module adds to every entry in the merge check
      */
-    private const READABLE_PATHS_WIRING = 'magento/module-variable/etc/di.xml';
+    private const CONTRIBUTED_CAVEAT = 'A caveat contributed by another module.';
+    private const CONTRIBUTED_STEP = 'A step contributed by another module.';
 
-    public function testEveryEntryDescribesADifferentDirective(): void
+    public function testTheShippedFileIsReadWithoutRefusingAnyEntryOrEditRoute(): void
     {
-        $seen = [];
+        $logger = $this->createMock(LoggerInterface::class);
+        $logger->expects(self::never())->method('error');
+        $logger->expects(self::never())->method('warning');
 
-        foreach ($this->variables() as $variable) {
-            $reference = $variable->getAttribute('kind') . ':' . $variable->getAttribute('expression');
+        $entries = $this->knowledgeFrom($this->shippedKnowledgeFile(), $logger)->listAll(self::STORE_ID);
 
-            self::assertNotContains(
-                $reference,
-                $seen,
-                sprintf(
-                    'The knowledge file describes "%s" more than once. Only one of the two would ever '
-                    . 'be read and nothing would say which.',
-                    $reference
-                )
-            );
-
-            $seen[] = $reference;
-        }
-
-        self::assertNotEmpty($seen, 'The knowledge file describes nothing at all.');
+        self::assertNotEmpty($entries, 'The knowledge file describes nothing at all.');
     }
 
     public function testEveryEntrySaysWhatItIsAndWhereItComesFrom(): void
     {
-        foreach ($this->variables() as $variable) {
-            $reference = $this->reference($variable);
+        $originKinds = $this->constants(OriginInterface::class, 'KIND_');
 
-            self::assertNotSame('', $this->childText($variable, 'title'), $this->because($reference, 'no title'));
-            self::assertNotSame('', $this->childText($variable, 'summary'), $this->because($reference, 'no summary'));
+        foreach ($this->shippedEntries() as $entry) {
+            $reference = $entry->getReference()->toCanonicalString();
 
-            $origin = $this->firstChild($variable, 'origin');
-
-            self::assertNotNull($origin, $this->because($reference, 'no origin'));
-            self::assertNotSame(
-                '',
-                $origin->getAttribute('kind'),
+            self::assertNotSame('', $entry->getTitle(), $this->because($reference, 'no title'));
+            self::assertNotSame('', $entry->getSummary(), $this->because($reference, 'no summary'));
+            self::assertContains(
+                $entry->getOrigin()->getKind(),
+                $originKinds,
                 $this->because($reference, 'an origin that does not say what kind it is')
             );
             self::assertNotSame(
                 '',
-                $this->normalise($origin->textContent),
+                $entry->getOrigin()->getExplanation(),
                 $this->because($reference, 'an origin that does not explain how the value is produced')
             );
         }
     }
 
-    public function testALinkNamesAnAdminRouteRatherThanAFinishedAddress(): void
+    public function testEveryLinkOpensARouteThatWasLookedUpOnAnInstallation(): void
     {
-        foreach ($this->affordances() as $reference => $affordance) {
-            $route = trim($affordance->getAttribute('route'));
+        $checked = 0;
 
-            if ($route === '') {
+        foreach ($this->shippedEntries() as $entry) {
+            $url = $entry->getAffordance()?->getUrl();
+
+            if ($url === null) {
                 continue;
             }
 
-            self::assertStringNotContainsString(
-                '://',
-                $route,
-                $this->because($reference, 'a finished address where a route belongs')
-            );
-            self::assertStringStartsNotWith(
-                '/',
-                $route,
-                $this->because($reference, 'a path where a route belongs')
-            );
-
-            $frontName = explode('/', $route)[0];
-
             self::assertContains(
-                $frontName,
-                $this->allowedRouteFrontNames(),
+                explode('?', $url, 2)[0],
+                self::ALLOWED_ROUTES,
                 $this->because(
-                    $reference,
-                    sprintf('a route into "%s", which is not an administration front name', $frontName)
+                    $entry->getReference()->toCanonicalString(),
+                    sprintf(
+                        'a link built for "%s", which is not one of the routes this content was checked '
+                        . 'against. Look the new route up in a routes.xml, confirm it has a controller, '
+                        . 'and add it here',
+                        $url
+                    )
                 )
             );
+
+            $checked++;
         }
+
+        self::assertGreaterThan(0, $checked, 'No entry offers a link, so this check proved nothing.');
     }
 
     public function testAValueTheSendingCodeAssignsOffersWrittenStepsRatherThanALink(): void
     {
         $checked = 0;
 
-        foreach ($this->variables() as $variable) {
-            $origin = $this->firstChild($variable, 'origin');
-
-            if ($origin === null || $origin->getAttribute('kind') !== OriginInterface::KIND_TEMPLATE_VAR) {
+        foreach ($this->shippedEntries() as $entry) {
+            if ($entry->getOrigin()->getKind() !== OriginInterface::KIND_TEMPLATE_VAR) {
                 continue;
             }
 
-            $reference = $this->reference($variable);
-            $affordance = $this->firstChild($variable, 'affordance');
+            $reference = $entry->getReference()->toCanonicalString();
+            $affordance = $entry->getAffordance();
 
             self::assertNotNull($affordance, $this->because($reference, 'nothing an administrator can do'));
             self::assertSame(
                 EditAffordanceInterface::KIND_INSTRUCTION,
-                $affordance->getAttribute('kind'),
+                $affordance->getKind(),
                 $this->because(
                     $reference,
                     'an edit route other than written steps, although no administration page assigns '
                     . 'a value the sending code puts into the message'
                 )
-            );
-            self::assertNotEmpty(
-                $this->children($affordance, 'step'),
-                $this->because($reference, 'written steps with nothing written in them')
             );
 
             $checked++;
@@ -272,30 +194,65 @@ class EmailVariablesContentTest extends TestCase
         );
     }
 
-    public function testEveryCaveatAndStepIsIdentifiedSoContributionsMergeAlongsideThem(): void
+    public function testEveryWrittenInstructionCarriesAtLeastOneStep(): void
     {
-        foreach ($this->variables() as $variable) {
-            $reference = $this->reference($variable);
+        foreach ($this->shippedEntries() as $entry) {
+            $affordance = $entry->getAffordance();
 
-            foreach ($this->children($variable, 'caveat') as $caveat) {
-                self::assertNotSame(
-                    '',
-                    trim($caveat->getAttribute('id')),
-                    $this->because($reference, 'a caveat with no identifier')
-                );
-            }
-
-            $affordance = $this->firstChild($variable, 'affordance');
-
-            if ($affordance === null) {
+            if ($affordance === null || $affordance->getKind() !== EditAffordanceInterface::KIND_INSTRUCTION) {
                 continue;
             }
 
-            foreach ($this->children($affordance, 'step') as $step) {
-                self::assertNotSame(
-                    '',
-                    trim($step->getAttribute('id')),
-                    $this->because($reference, 'a step with no identifier')
+            self::assertNotEmpty(
+                $affordance->getSteps(),
+                $this->because($entry->getReference()->toCanonicalString(), 'written steps with nothing in them')
+            );
+        }
+    }
+
+    /**
+     * A module adds to an entry by naming its directive and identifying what it adds; the merge has
+     * to file the addition beside the shipped content rather than in place of it or in a new entry.
+     *
+     * Every entry takes part, the ones whose expression holds quotes and brackets included: the
+     * merge has to identify those by their expression just the same.
+     *
+     * @return void
+     */
+    public function testAContributedCaveatAndStepAreShownBesideTheShippedOnes(): void
+    {
+        $shipped = $this->shippedEntries();
+        $contribution = '';
+
+        foreach ($shipped as $entry) {
+            $contribution .= $this->contributionFor($entry);
+        }
+
+        $logger = $this->createMock(LoggerInterface::class);
+        $logger->expects(self::never())->method('error');
+
+        $merged = $this->knowledgeFrom(
+            $this->shippedKnowledgeFile()
+                + ['contribution/email_variables.xml' => '<variables>' . $contribution . '</variables>'],
+            $logger
+        );
+
+        foreach ($shipped as $entry) {
+            $reference = $entry->getReference();
+            $after = $merged->describe($reference, self::STORE_ID);
+
+            self::assertNotNull($after, $this->because($reference->toCanonicalString(), 'vanished in the merge'));
+            self::assertSame(
+                [...$entry->getCaveats(), self::CONTRIBUTED_CAVEAT],
+                $after->getCaveats(),
+                $this->because($reference->toCanonicalString(), 'caveats the merge did not keep beside each other')
+            );
+
+            if ($entry->getAffordance()?->getKind() === EditAffordanceInterface::KIND_INSTRUCTION) {
+                self::assertSame(
+                    [...$entry->getAffordance()->getSteps(), self::CONTRIBUTED_STEP],
+                    $after->getAffordance()?->getSteps(),
+                    $this->because($reference->toCanonicalString(), 'steps the merge did not keep beside each other')
                 );
             }
         }
@@ -303,30 +260,24 @@ class EmailVariablesContentTest extends TestCase
 
     public function testEveryFamilyOfMessagesTheEditorPreviewsHasAnEntry(): void
     {
-        $expressions = [];
+        $knowledge = $this->shippedKnowledge();
+        $parser = $this->parser();
 
-        foreach ($this->variables() as $variable) {
-            if ($variable->getAttribute('kind') === 'var') {
-                $expressions[] = $variable->getAttribute('expression');
-            }
-        }
-
-        foreach ($this->templateFamilies() as $family) {
+        foreach ($this->previewedFamilies() as $family) {
             self::assertArrayHasKey(
                 $family,
                 self::FAMILY_WITNESS,
                 sprintf(
-                    'The module can preview the "%s" messages, but nothing here says which variable '
+                    'The editor can preview the "%s" messages, but nothing here says which variable '
                     . 'proves that family is documented.',
                     $family
                 )
             );
 
-            self::assertContains(
-                self::FAMILY_WITNESS[$family],
-                $expressions,
+            self::assertNotNull(
+                $knowledge->describe($parser->create('var', self::FAMILY_WITNESS[$family]), self::STORE_ID),
                 sprintf(
-                    'The "%s" messages have no entry in the knowledge file: "%s" is not described.',
+                    'The "%s" messages are not documented: "%s" is not described.',
                     $family,
                     self::FAMILY_WITNESS[$family]
                 )
@@ -334,69 +285,14 @@ class EmailVariablesContentTest extends TestCase
         }
     }
 
-    public function testEveryLinkOpensARouteThatWasLookedUpOnThisInstallation(): void
-    {
-        foreach ($this->affordances() as $reference => $affordance) {
-            $route = trim($affordance->getAttribute('route'));
-
-            if ($affordance->getAttribute('kind') === EditAffordanceInterface::KIND_LINK) {
-                // A link with no route is thrown away when the file is read, leaving the entry
-                // described and its edit route silently absent.
-                self::assertNotSame(
-                    '',
-                    $route,
-                    $this->because($reference, 'a link that names no route to open')
-                );
-            }
-
-            if ($route === '') {
-                continue;
-            }
-
-            self::assertContains(
-                $route,
-                self::ALLOWED_ROUTES,
-                $this->because(
-                    $reference,
-                    sprintf(
-                        'a link into "%s", which is not one of the routes this content was checked '
-                        . 'against. Look the new route up in a routes.xml, confirm it has a '
-                        . 'controller, and add it here',
-                        $route
-                    )
-                )
-            );
-        }
-    }
-
-    public function testEveryWrittenInstructionCarriesAtLeastOneStep(): void
-    {
-        foreach ($this->affordances() as $reference => $affordance) {
-            if ($affordance->getAttribute('kind') !== EditAffordanceInterface::KIND_INSTRUCTION) {
-                continue;
-            }
-
-            self::assertNotEmpty(
-                $this->children($affordance, 'step'),
-                $this->because($reference, 'written steps with nothing written in them')
-            );
-        }
-    }
-
     public function testEveryDirectiveKindIsDescribedInItsOwnRight(): void
     {
-        $described = [];
-
-        foreach ($this->variables() as $variable) {
-            if ($variable->getAttribute('expression') === '') {
-                $described[] = $variable->getAttribute('kind');
-            }
-        }
+        $knowledge = $this->shippedKnowledge();
+        $parser = $this->parser();
 
         foreach (array_keys(DirectiveReferenceParser::KINDS) as $kind) {
-            self::assertContains(
-                $kind,
-                $described,
+            self::assertNotNull(
+                $knowledge->describe($parser->create($kind, ''), self::STORE_ID),
                 sprintf(
                     'Nothing describes the {{%s}} directive itself. That entry is what a directive '
                     . 'nobody wrote about falls back on, so without it the whole kind reads as '
@@ -409,191 +305,156 @@ class EmailVariablesContentTest extends TestCase
 
     public function testAConfigEntryEitherNamesAReadablePathOrSaysItRendersEmpty(): void
     {
+        $readability = $this->knowledgeContainer(
+            $this->shippedKnowledgeFile(),
+            $this->createMock(LoggerInterface::class)
+        )->get(ConfigPathReadabilityInterface::class);
+        self::assertInstanceOf(ConfigPathReadabilityInterface::class, $readability);
+
         $checked = 0;
 
-        foreach ($this->variables() as $variable) {
-            $path = $variable->getAttribute('expression');
+        foreach ($this->shippedEntries() as $entry) {
+            $reference = $entry->getReference();
 
-            // An entry with no path describes the directive itself rather than one setting, and
-            // there is nothing to check it against.
-            if ($variable->getAttribute('kind') !== 'config' || $path === '') {
+            // An entry with no path describes the directive itself rather than one setting.
+            if ($reference->getKind() !== 'config' || $reference->getExpression() === '') {
                 continue;
             }
 
-            $readable = in_array($path, self::READABLE_CONFIG_PATHS, true);
-            $warns = str_contains($this->caveatText($variable), self::EMPTY_RENDER_PHRASE);
+            $warns = str_contains(implode(' ', $entry->getCaveats()), self::EMPTY_RENDER_PHRASE);
 
             self::assertTrue(
-                $readable || $warns,
+                $readability->isReadable($reference->getExpression()) || $warns,
                 $this->because(
-                    $this->reference($variable),
+                    $reference->toCanonicalString(),
                     'a description of a configuration path an email cannot read and no word about it '
-                    . 'rendering as an empty string, so an administrator would take it for a working '
-                    . 'setting'
+                    . 'rendering as an empty string, so an administrator would take it for a working setting'
                 )
             );
 
             $checked++;
         }
 
-        self::assertGreaterThan(
-            0,
-            $checked,
-            'No entry describes a configuration path, so this check proved nothing.'
-        );
-    }
-
-    public function testTheReadablePathsThisFileAssumesAreStillTheOnesMagentoWires(): void
-    {
-        $wiring = $this->neighbourFile(self::READABLE_PATHS_WIRING);
-
-        if ($wiring === null) {
-            self::markTestSkipped(
-                'Magento_Variable is not installed beside this module, so the set of configuration '
-                . 'paths an email can read cannot be compared against its wiring.'
-            );
-        }
-
-        $document = new DOMDocument();
-        $document->load($wiring);
-
-        $wired = [];
-
-        foreach ($document->getElementsByTagName('item') as $item) {
-            $name = $item->getAttribute('name');
-
-            // The wiring nests the paths one level deep, inside an item per configuration group.
-            // Only the leaves are paths, and a leaf is the item that carries no items of its own.
-            if (str_contains($name, '/') && $this->children($item, 'item') === []) {
-                $wired[] = $name;
-            }
-        }
-
-        $listed = self::READABLE_CONFIG_PATHS;
-        sort($wired);
-        sort($listed);
-
-        self::assertSame(
-            $listed,
-            $wired,
-            'The set of configuration paths an email can read has changed. Update the list this file '
-            . 'assumes, and re-check every entry describing one of those paths before doing so.'
-        );
+        self::assertGreaterThan(0, $checked, 'No entry describes a configuration path, so this check proved nothing.');
     }
 
     /**
-     * Everything the caveats of an entry say, run together
+     * The shipped knowledge, as the provider answers it
      *
-     * @param DOMElement $variable Entry element
-     * @return string
+     * @return VariableKnowledgeProviderInterface
      */
-    private function caveatText(DOMElement $variable): string
+    private function shippedKnowledge(): VariableKnowledgeProviderInterface
     {
-        $texts = [];
-
-        foreach ($this->children($variable, 'caveat') as $caveat) {
-            $texts[] = $this->normalise($caveat->textContent);
-        }
-
-        return implode(' ', $texts);
+        return $this->knowledgeFrom($this->shippedKnowledgeFile(), $this->createMock(LoggerInterface::class));
     }
 
     /**
-     * Absolute path to a file of another package installed beside this module, or null
+     * Every shipped entry
      *
-     * @param string $relativePath Path relative to the directory this module is installed in
-     * @return string|null
+     * @return VariableKnowledgeInterface[]
      */
-    private function neighbourFile(string $relativePath): ?string
+    private function shippedEntries(): array
     {
-        $candidate = dirname(__DIR__, 6) . '/' . $relativePath;
-
-        return is_file($candidate) ? $candidate : null;
+        return $this->shippedKnowledge()->listAll(self::STORE_ID);
     }
 
     /**
-     * Every family of messages the module knows how to fill with sample data
+     * The directive reference parser the module wires
+     *
+     * @return DirectiveReferenceParserInterface
+     */
+    private function parser(): DirectiveReferenceParserInterface
+    {
+        $parser = (new ModuleContainer())->build()->get(DirectiveReferenceParserInterface::class);
+        self::assertInstanceOf(DirectiveReferenceParserInterface::class, $parser);
+
+        return $parser;
+    }
+
+    /**
+     * Every family of messages the editor fills with sample data, as the container configures it
      *
      * @return string[] Family codes, without repetition
      */
-    private function templateFamilies(): array
+    private function previewedFamilies(): array
     {
-        $document = new DOMDocument();
-        $document->load($this->path('di.xml'));
+        $map = (new ModuleContainer())->argumentsOf(TemplateProviderMapping::class)['templateGroupMap'] ?? [];
+        self::assertIsArray($map, 'The module no longer says which templates belong to which family.');
 
-        $xpath = new DOMXPath($document);
-        $nodes = $xpath->query(
-            sprintf(
-                '//type[@name="%s"]/arguments/argument[@name="templateGroupMap"]/item',
-                self::TEMPLATE_MAPPING_TYPE
-            )
-        );
-
-        self::assertInstanceOf(
-            DOMNodeList::class,
-            $nodes,
-            'The module no longer declares which templates belong to which family.'
-        );
-
-        $families = [];
-
-        foreach ($nodes as $node) {
-            $family = trim($node->textContent);
-
-            if ($family !== '' && !in_array($family, $families, true)) {
-                $families[] = $family;
-            }
-        }
-
+        $families = array_values(array_unique(array_filter($map, 'is_string')));
         self::assertNotEmpty($families, 'The module no longer declares any family of messages.');
 
         return $families;
     }
 
     /**
-     * Every entry in the shipped knowledge file
+     * A contribution adding one identified caveat, and one identified step to written instructions
      *
-     * @return DOMElement[]
+     * It restates what the schema requires of every variable as the entry already has it, so the
+     * merge leaves the shipped prose as it was.
+     *
+     * @param VariableKnowledgeInterface $entry Shipped entry to add to
+     * @return string
      */
-    private function variables(): array
+    private function contributionFor(VariableKnowledgeInterface $entry): string
     {
-        $document = new DOMDocument();
-        $document->load($this->path('email_variables.xml'));
+        $origin = $entry->getOrigin();
+        $affordance = $entry->getAffordance();
+        $steps = '';
 
-        $root = $document->documentElement;
+        if ($affordance !== null && $affordance->getKind() === EditAffordanceInterface::KIND_INSTRUCTION) {
+            $steps = sprintf(
+                '<affordance kind="instruction" label="%s"><step id="contributed">%s</step></affordance>',
+                $this->escape($affordance->getLabel()),
+                self::CONTRIBUTED_STEP
+            );
+        }
 
-        return $root === null ? [] : $this->children($root, 'variable');
+        return sprintf(
+            '<variable kind="%s" expression="%s" outputKind="%s"><title>%s</title><summary>%s</summary>'
+            . '<origin kind="%s" locator="%s">%s</origin>%s<caveat id="contributed">%s</caveat></variable>',
+            $this->escape($entry->getReference()->getKind()),
+            $this->escape($entry->getReference()->getExpression()),
+            $this->escape($entry->getOutputKind()),
+            $this->escape($entry->getTitle()),
+            $this->escape($entry->getSummary()),
+            $this->escape($origin->getKind()),
+            $this->escape($origin->getLocator()),
+            $this->escape($origin->getExplanation()),
+            $steps,
+            self::CONTRIBUTED_CAVEAT
+        );
     }
 
     /**
-     * Every affordance in the shipped knowledge file, keyed by the reference it belongs to
+     * Text as it has to be written into XML
      *
-     * @return array<string, DOMElement>
+     * @param string $text
+     * @return string
      */
-    private function affordances(): array
+    private function escape(string $text): string
     {
-        $affordances = [];
+        return htmlspecialchars($text, ENT_QUOTES | ENT_XML1);
+    }
 
-        foreach ($this->variables() as $variable) {
-            $affordance = $this->firstChild($variable, 'affordance');
+    /**
+     * The values of an interface's constants whose names share a prefix
+     *
+     * @param class-string $interface Interface publishing the set
+     * @param string $prefix Constant name prefix marking membership of the set
+     * @return string[]
+     */
+    private function constants(string $interface, string $prefix): array
+    {
+        $values = [];
 
-            if ($affordance !== null) {
-                $affordances[$this->reference($variable)] = $affordance;
+        foreach ((new ReflectionClass($interface))->getConstants() as $name => $value) {
+            if (str_starts_with($name, $prefix) && is_string($value)) {
+                $values[] = $value;
             }
         }
 
-        return $affordances;
-    }
-
-    /**
-     * The reference an entry describes, for naming it in a failure message
-     *
-     * @param DOMElement $variable Entry element
-     * @return string
-     */
-    private function reference(DOMElement $variable): string
-    {
-        return $variable->getAttribute('kind') . ':' . $variable->getAttribute('expression');
+        return $values;
     }
 
     /**
@@ -606,80 +467,5 @@ class EmailVariablesContentTest extends TestCase
     private function because(string $reference, string $fault): string
     {
         return sprintf('The entry for "%s" has %s.', $reference, $fault);
-    }
-
-    /**
-     * The text of the first child element of the given name, collapsed to one line
-     *
-     * @param DOMElement $parent Element to look under
-     * @param string $name Element name
-     * @return string
-     */
-    private function childText(DOMElement $parent, string $name): string
-    {
-        $child = $this->firstChild($parent, $name);
-
-        return $child === null ? '' : $this->normalise($child->textContent);
-    }
-
-    /**
-     * The first direct child element of the given name, or null
-     *
-     * @param DOMElement $parent Element to look under
-     * @param string $name Element name
-     * @return DOMElement|null
-     */
-    private function firstChild(DOMElement $parent, string $name): ?DOMElement
-    {
-        foreach ($this->children($parent, $name) as $child) {
-            return $child;
-        }
-
-        return null;
-    }
-
-    /**
-     * Every direct child element of the given name
-     *
-     * Direct children only, so that a step inside an affordance is never read as a caveat of the entry
-     * around it.
-     *
-     * @param DOMElement $parent Element to look under
-     * @param string $name Element name
-     * @return DOMElement[]
-     */
-    private function children(DOMElement $parent, string $name): array
-    {
-        $elements = [];
-
-        foreach ($parent->childNodes as $child) {
-            if ($child instanceof DOMElement && $child->localName === $name) {
-                $elements[] = $child;
-            }
-        }
-
-        return $elements;
-    }
-
-    /**
-     * Collapse the layout of the file out of a piece of prose
-     *
-     * @param string $text Text as written in the document
-     * @return string
-     */
-    private function normalise(string $text): string
-    {
-        return trim((string)preg_replace('/\s+/', ' ', $text));
-    }
-
-    /**
-     * Absolute path to a file in the module's etc directory
-     *
-     * @param string $fileName Name of the file
-     * @return string
-     */
-    private function path(string $fileName): string
-    {
-        return dirname(__DIR__, 4) . '/etc/' . $fileName;
     }
 }

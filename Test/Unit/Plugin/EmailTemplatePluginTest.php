@@ -10,16 +10,23 @@ declare(strict_types=1);
 namespace Hryvinskyi\EmailTemplateEditor\Test\Unit\Plugin;
 
 use Hryvinskyi\EmailTemplateEditor\Api\ConfigInterface;
-use Hryvinskyi\EmailTemplateEditor\Api\CssImportantPromoterInterface;
 use Hryvinskyi\EmailTemplateEditor\Api\CssInlinerInterface;
-use Hryvinskyi\EmailTemplateEditor\Api\CssLayerFlattenerInterface;
-use Hryvinskyi\EmailTemplateEditor\Api\CssVariableResolverInterface;
 use Hryvinskyi\EmailTemplateEditor\Api\Data\TemplateOverrideInterface;
 use Hryvinskyi\EmailTemplateEditor\Api\EditorContextFlagInterface;
 use Hryvinskyi\EmailTemplateEditor\Api\PluginBypassFlagInterface;
 use Hryvinskyi\EmailTemplateEditor\Api\TemplateOverrideRepositoryInterface;
 use Hryvinskyi\EmailTemplateEditor\Api\ThemeRepositoryInterface;
 use Hryvinskyi\EmailTemplateEditor\Api\UtilityCssGeneratorInterface;
+use Hryvinskyi\EmailTemplateEditor\Model\Color\ColorMixer;
+use Hryvinskyi\EmailTemplateEditor\Model\Color\ColorParser;
+use Hryvinskyi\EmailTemplateEditor\Model\Css\CssStructureParser;
+use Hryvinskyi\EmailTemplateEditor\Model\Css\CssSyntaxScanner;
+use Hryvinskyi\EmailTemplateEditor\Model\Css\EmailStylesheetCollector;
+use Hryvinskyi\EmailTemplateEditor\Model\CssColorConverter;
+use Hryvinskyi\EmailTemplateEditor\Model\CssImportantPromoter;
+use Hryvinskyi\EmailTemplateEditor\Model\CssInliner;
+use Hryvinskyi\EmailTemplateEditor\Model\CssLayerFlattener;
+use Hryvinskyi\EmailTemplateEditor\Model\CssVariableResolver;
 use Hryvinskyi\EmailTemplateEditor\Plugin\EmailTemplatePlugin;
 use Magento\Email\Model\AbstractTemplate;
 use Magento\Framework\Stdlib\DateTime\TimezoneInterface;
@@ -28,6 +35,7 @@ use Magento\Store\Model\StoreManagerInterface;
 use PHPUnit\Framework\MockObject\MockObject;
 use PHPUnit\Framework\TestCase;
 use Psr\Log\LoggerInterface;
+use Psr\Log\NullLogger;
 
 /**
  * Override resolution: the priority ladder, and the single query that now walks it.
@@ -71,16 +79,74 @@ class EmailTemplatePluginTest extends TestCase
         8 => [self::TEMPLATE_ID, 0, false],
     ];
 
-    private ConfigInterface&MockObject $config;
-    private TemplateOverrideRepositoryInterface&MockObject $overrideRepository;
-    private ThemeRepositoryInterface&MockObject $themeRepository;
-    private StoreManagerInterface&MockObject $storeManager;
-    private LoggerInterface&MockObject $logger;
-    private PluginBypassFlagInterface&MockObject $pluginBypassFlag;
-    private EditorContextFlagInterface&MockObject $editorContextFlag;
-    private CssLayerFlattenerInterface&MockObject $layerFlattener;
-    private CssVariableResolverInterface&MockObject $cssVariableResolver;
-    private CssImportantPromoterInterface&MockObject $importantPromoter;
+    /**
+     * Module configuration double
+     *
+     * @var ConfigInterface&MockObject
+     */
+    private MockObject $config;
+
+    /**
+     * Override repository double answering from $candidates
+     *
+     * @var TemplateOverrideRepositoryInterface&MockObject
+     */
+    private MockObject $overrideRepository;
+
+    /**
+     * Theme repository double
+     *
+     * @var ThemeRepositoryInterface&MockObject
+     */
+    private MockObject $themeRepository;
+
+    /**
+     * Store manager double reporting the current store
+     *
+     * @var StoreManagerInterface&MockObject
+     */
+    private MockObject $storeManager;
+
+    /**
+     * Logger double
+     *
+     * @var LoggerInterface&MockObject
+     */
+    private MockObject $logger;
+
+    /**
+     * Bypass flag double
+     *
+     * @var PluginBypassFlagInterface&MockObject
+     */
+    private MockObject $pluginBypassFlag;
+
+    /**
+     * Editor context flag double
+     *
+     * @var EditorContextFlagInterface&MockObject
+     */
+    private MockObject $editorContextFlag;
+
+    /**
+     * The real stylesheet collector the plugin scopes renders with
+     *
+     * @var EmailStylesheetCollector
+     */
+    private EmailStylesheetCollector $stylesheets;
+
+    /**
+     * Every call the inliner received: [html, custom, utility, theme]
+     *
+     * @var list<array{0: string, 1: string|null, 2: string|null, 3: string|null}>
+     */
+    private array $inlined = [];
+
+    /**
+     * Plugin under test
+     *
+     * @var EmailTemplatePlugin
+     */
     private EmailTemplatePlugin $plugin;
 
     /**
@@ -102,9 +168,7 @@ class EmailTemplatePluginTest extends TestCase
         $this->logger = $this->createMock(LoggerInterface::class);
         $this->pluginBypassFlag = $this->createMock(PluginBypassFlagInterface::class);
         $this->editorContextFlag = $this->createMock(EditorContextFlagInterface::class);
-        $this->layerFlattener = $this->createMock(CssLayerFlattenerInterface::class);
-        $this->cssVariableResolver = $this->createMock(CssVariableResolverInterface::class);
-        $this->importantPromoter = $this->createMock(CssImportantPromoterInterface::class);
+        $this->stylesheets = new EmailStylesheetCollector();
 
         $store = $this->createMock(StoreInterface::class);
         $store->method('getId')->willReturn(self::STORE_ID);
@@ -117,39 +181,26 @@ class EmailTemplatePluginTest extends TestCase
         // No theme row, so the combined CSS is whatever the override itself carries.
         $this->themeRepository->method('getDefaultTheme')->willReturn(null);
 
-        $this->layerFlattener->method('flatten')->willReturnArgument(0);
-        $this->cssVariableResolver->method('resolve')->willReturnArgument(0);
-        $this->importantPromoter->method('promote')->willReturnArgument(0);
-
         // Every lookup is recorded so the tests can count them without an inline mock
         // expectation, whose failure the plugin's own catch block would swallow.
         $this->overrideRepository->method('getOverridesForIdentifiers')
             ->willReturnCallback(
+                /**
+                 * @param string[] $identifiers
+                 * @param int[] $storeIds
+                 * @param string[] $statuses
+                 * @return array<string, TemplateOverrideInterface[]>
+                 */
                 function (array $identifiers, array $storeIds, array $statuses): array {
-                    $this->lookups[] = [$identifiers, $storeIds, $statuses];
+                    /** @var array{0: string[], 1: int[], 2: string[]} $lookup */
+                    $lookup = [$identifiers, $storeIds, $statuses];
+                    $this->lookups[] = $lookup;
 
                     return $this->candidates;
                 }
             );
 
-        $timezone = $this->createMock(TimezoneInterface::class);
-        $timezone->method('date')->willReturn(new \DateTime(self::NOW));
-
-        $this->plugin = new EmailTemplatePlugin(
-            $this->config,
-            $this->overrideRepository,
-            $this->themeRepository,
-            $this->createMock(UtilityCssGeneratorInterface::class),
-            $this->createMock(CssInlinerInterface::class),
-            $this->storeManager,
-            $this->logger,
-            $this->pluginBypassFlag,
-            $this->editorContextFlag,
-            $this->cssVariableResolver,
-            $this->layerFlattener,
-            $this->importantPromoter,
-            $timezone
-        );
+        $this->plugin = $this->pluginWith($this->storeManager, $this->recordingInliner());
     }
 
     // -------------------------------------------------------------------------------------
@@ -252,7 +303,7 @@ class EmailTemplatePluginTest extends TestCase
     /**
      * @return array<string, array{0: string|null, 1: string|null, 2: bool}>
      */
-    public function windowShapeProvider(): array
+    public static function windowShapeProvider(): array
     {
         return [
             'both bounds, now inside the window' => [self::WINDOW_OPEN_FROM, self::WINDOW_OPEN_TO, true],
@@ -299,7 +350,7 @@ class EmailTemplatePluginTest extends TestCase
     /**
      * @return array<string, array{0: string|null, 1: string|null}>
      */
-    public function halfOpenWindowProvider(): array
+    public static function halfOpenWindowProvider(): array
     {
         return [
             'only a start, already reached' => [self::WINDOW_OPEN_FROM, null],
@@ -355,7 +406,7 @@ class EmailTemplatePluginTest extends TestCase
     /**
      * @return array<string, array{0: string|null, 1: string|null}>
      */
-    public function closedHalfOpenWindowProvider(): array
+    public static function closedHalfOpenWindowProvider(): array
     {
         return [
             'only a start, still ahead' => [self::WINDOW_FUTURE_FROM, null],
@@ -388,7 +439,14 @@ class EmailTemplatePluginTest extends TestCase
     public function testAClosedScheduleWindowIsSkippedInFavourOfAnUndatedRow(): void
     {
         $this->candidates = $this->group([
-            $this->override(1, self::THEMED_ID, self::STORE_ID, 'expired', '2026-01-01 00:00:00', '2026-02-01 00:00:00'),
+            $this->override(
+                1,
+                self::THEMED_ID,
+                self::STORE_ID,
+                'expired',
+                '2026-01-01 00:00:00',
+                '2026-02-01 00:00:00'
+            ),
             $this->override(2, self::TEMPLATE_ID, 0, 'undated', null, null),
         ]);
 
@@ -514,7 +572,11 @@ class EmailTemplatePluginTest extends TestCase
     {
         $this->candidates = $this->ladderRows(range(1, 8));
 
-        $this->plugin->afterLoadDefault($this->template(self::THEME_CODE), $this->template(self::THEME_CODE), self::TEMPLATE_ID);
+        $this->plugin->afterLoadDefault(
+            $this->template(self::THEME_CODE),
+            $this->template(self::THEME_CODE),
+            self::TEMPLATE_ID
+        );
 
         self::assertCount(1, $this->lookups);
         self::assertSame([self::THEMED_ID, self::TEMPLATE_ID], $this->lookups[0][0]);
@@ -528,7 +590,11 @@ class EmailTemplatePluginTest extends TestCase
         $this->overrideRepository->expects(self::never())->method('getImmediatePublished');
         $this->candidates = $this->ladderRows(range(1, 8));
 
-        $this->plugin->afterLoadDefault($this->template(self::THEME_CODE), $this->template(self::THEME_CODE), self::TEMPLATE_ID);
+        $this->plugin->afterLoadDefault(
+            $this->template(self::THEME_CODE),
+            $this->template(self::THEME_CODE),
+            self::TEMPLATE_ID
+        );
     }
 
     public function testTheSameTemplateResolvedTwiceIsLookedUpOnce(): void
@@ -575,87 +641,140 @@ class EmailTemplatePluginTest extends TestCase
     }
 
     // -------------------------------------------------------------------------------------
-    //  Pending CSS
+    //  One stylesheet per email, inlined once
     // -------------------------------------------------------------------------------------
 
-    public function testPendingCssIsEmbeddedForTheTemplateItWasResolvedFor(): void
+    public function testAnIncludedFootersCssIsInlinedOnceIntoTheWholeEmail(): void
     {
-        $this->candidates = $this->group([
-            $this->override(1, self::TEMPLATE_ID, 0, 'body', null, null, true, '.brand { color: red; }'),
-        ]);
+        $footer = $this->loadedWithCss('design_email_footer_template', '.border-t-3{}');
+        $email = $this->template(null);
 
-        $template = $this->template(null);
-        $this->plugin->afterLoadDefault($template, $template, self::TEMPLATE_ID);
+        $html = $this->render($this->plugin, $email, fn (): string => '<html><body>'
+            . $this->render($this->plugin, $footer, static fn (): string => '<td class="border-t-3">f</td>')
+            . '</body></html>');
 
-        $processed = $this->plugin->afterGetProcessedTemplate($template, '<html><head></head><body>x</body></html>');
-
-        self::assertStringContainsString('.brand { color: red; }', $processed);
-        self::assertStringContainsString('</style></head>', str_replace("\n", '', $processed));
+        self::assertCount(1, $this->inlined, 'Only the outermost render inlines.');
+        self::assertSame('<html><body><td class="border-t-3">f</td></body></html>', $this->inlined[0][0]);
+        self::assertSame('.border-t-3{}', $this->inlined[0][2]);
+        self::assertStringStartsWith('[inlined]', $html);
     }
 
-    public function testPendingCssNeverLeaksOntoAnUnrelatedTemplate(): void
+    public function testAnIncludedTemplateReturnsItsMarkupWithoutAStyleBlock(): void
     {
-        $this->candidates = $this->group([
-            $this->override(1, self::TEMPLATE_ID, 0, 'body', null, null, true, '.brand { color: red; }'),
-        ]);
+        $footer = $this->loadedWithCss('design_email_footer_template', '.border-t-3{}');
+        $fragment = null;
 
-        $owner = $this->template(null);
-        $this->plugin->afterLoadDefault($owner, $owner, self::TEMPLATE_ID);
+        $this->render($this->plugin, $this->template(null), function () use ($footer, &$fragment): string {
+            $fragment = $this->render($this->plugin, $footer, static fn (): string => '</td></tr><tr><td>');
 
-        $stranger = $this->template(null);
-        $markup = '<html><head></head><body>x</body></html>';
+            return (string)$fragment;
+        });
 
-        self::assertSame(
-            $markup,
-            $this->plugin->afterGetProcessedTemplate($stranger, $markup),
-            'The pending CSS belongs to the template object it was resolved for, not to a slot.'
+        self::assertSame('</td></tr><tr><td>', $fragment);
+    }
+
+    public function testTheMessagesOwnCssComesAfterTheCssOfWhatItIncludes(): void
+    {
+        $header = $this->loadedWithCss('design_email_header_template', '.header-rule{}');
+        $email = $this->loadedWithCss(self::TEMPLATE_ID, '.message-rule{}');
+
+        $this->render($this->plugin, $email, fn (): string
+            => $this->render($this->plugin, $header, static fn (): string => '<html><body>') . '</body></html>');
+
+        self::assertSame(".header-rule{}\n.message-rule{}", $this->inlined[0][2]);
+    }
+
+    public function testAPlainTextEmailIsNotStyled(): void
+    {
+        $email = $this->loadedWithCss(self::TEMPLATE_ID, '.x{}', AbstractTemplate::TYPE_TEXT);
+
+        self::assertSame('Hello', $this->render($this->plugin, $email, static fn (): string => 'Hello'));
+        self::assertSame([], $this->inlined);
+    }
+
+    public function testAnEmailProcessedTwiceIsStyledBothTimes(): void
+    {
+        $email = $this->loadedWithCss(self::TEMPLATE_ID, '.brand{}');
+
+        $this->render($this->plugin, $email, static fn (): string => '<p class="brand">a</p>');
+        $this->render($this->plugin, $email, static fn (): string => '<p class="brand">a</p>');
+
+        self::assertSame('.brand{}', $this->inlined[1][2] ?? null, 'The sheet is not used up by the first render.');
+    }
+
+    public function testASheetNeverReachesAnUnrelatedTemplate(): void
+    {
+        $this->loadedWithCss(self::TEMPLATE_ID, '.brand{}');
+
+        $this->render($this->plugin, $this->template(null), static fn (): string => '<p>x</p>');
+
+        self::assertSame('', $this->inlined[0][2]);
+    }
+
+    public function testResolvedOverridesAreForgottenOnceAnEmailIsRendered(): void
+    {
+        $this->candidates = $this->ladderRows([8]);
+
+        $first = $this->template(self::THEME_CODE);
+        $this->plugin->afterLoadDefault($first, $first, self::TEMPLATE_ID);
+        $this->render($this->plugin, $first, static fn (): string => 'x');
+
+        $second = $this->template(self::THEME_CODE);
+        $this->plugin->afterLoadDefault($second, $second, self::TEMPLATE_ID);
+
+        self::assertCount(2, $this->lookups, 'A long-running sender must see an override replaced meanwhile.');
+    }
+
+    public function testAFailedRenderLeavesNoScopeOpenForTheNextEmail(): void
+    {
+        try {
+            $this->render($this->plugin, $this->template(null), $this->failingRender());
+            self::fail('The failure must reach the caller.');
+        } catch (\RuntimeException $e) {
+            self::assertSame('filter failed', $e->getMessage());
+        }
+
+        $this->render($this->plugin, $this->template(null), static fn (): string => '<p>x</p>');
+
+        self::assertCount(1, $this->inlined, 'The next email is outermost again, so it is inlined.');
+    }
+
+    public function testABypassedRenderIsLeftAlone(): void
+    {
+        $bypass = $this->createMock(PluginBypassFlagInterface::class);
+        $bypass->method('isBypassed')->willReturn(true);
+        $this->pluginBypassFlag = $bypass;
+        $plugin = $this->pluginWith($this->storeManager, $this->recordingInliner());
+
+        self::assertSame('<p>x</p>', $this->render($plugin, $this->template(null), static fn (): string => '<p>x</p>'));
+        self::assertSame([], $this->inlined);
+    }
+
+    /**
+     * The footer's border, end to end: stored with the footer, inlined into the email that includes it
+     *
+     * This is the class a footer override lost when its CSS travelled as a style block inside the
+     * body, where the core filter's own inlining never looks.
+     */
+    public function testAFootersBorderEndsUpInlineOnItsCell(): void
+    {
+        $footer = $this->loadedWithCss(
+            'design_email_footer_template',
+            '@layer utilities { .border-t-3 { border-top-width: 3px; } .border-black { border-color: #000; } }'
         );
-        self::assertStringContainsString(
-            '.brand { color: red; }',
-            $this->plugin->afterGetProcessedTemplate($owner, $markup)
+        $plugin = $this->pluginWith($this->storeManager, $this->realInliner());
+
+        $html = $this->render($plugin, $this->template(null), fn (): string
+            => '<html><head></head><body><table><tr><td>content</td></tr>'
+            . $this->render($plugin, $footer, static fn (): string
+                => '<tr><td class="footer border-t-3 border-black">f</td></tr>')
+            . '</table></body></html>');
+
+        self::assertMatchesRegularExpression(
+            '/<td class="footer[^"]*"[^>]*style="[^"]*border-top-width:\s*3px/',
+            $html
         );
-    }
-
-    public function testPendingCssIsConsumedOnlyOnce(): void
-    {
-        $this->candidates = $this->group([
-            $this->override(1, self::TEMPLATE_ID, 0, 'body', null, null, true, '.brand { color: red; }'),
-        ]);
-
-        $template = $this->template(null);
-        $this->plugin->afterLoadDefault($template, $template, self::TEMPLATE_ID);
-
-        $markup = '<html><head></head><body>x</body></html>';
-        $this->plugin->afterGetProcessedTemplate($template, $markup);
-
-        self::assertSame($markup, $this->plugin->afterGetProcessedTemplate($template, $markup));
-    }
-
-    public function testPendingCssIsKeyedWeaklyByTheTemplateObject(): void
-    {
-        // Not by spl_object_id(): PHP recycles those handles once an object is collected, so an
-        // entry left behind by a template that was loaded but never processed could be handed to
-        // an unrelated template later in the same process. A weak key cannot be recycled, and the
-        // entry goes away with the template rather than accumulating.
-        $map = (new \ReflectionProperty(EmailTemplatePlugin::class, 'pendingCssMap'))
-            ->getValue($this->plugin);
-
-        self::assertInstanceOf(\WeakMap::class, $map);
-    }
-
-    public function testResetStateDropsPendingCss(): void
-    {
-        $this->candidates = $this->group([
-            $this->override(1, self::TEMPLATE_ID, 0, 'body', null, null, true, '.brand { color: red; }'),
-        ]);
-
-        $template = $this->template(null);
-        $this->plugin->afterLoadDefault($template, $template, self::TEMPLATE_ID);
-        $this->plugin->_resetState();
-
-        $markup = '<html><head></head><body>x</body></html>';
-
-        self::assertSame($markup, $this->plugin->afterGetProcessedTemplate($template, $markup));
+        self::assertStringNotContainsString('.border-t-3', $html, 'No style block is left behind for it.');
     }
 
     // -------------------------------------------------------------------------------------
@@ -670,15 +789,6 @@ class EmailTemplatePluginTest extends TestCase
         $template->method('getDesignParams')
             ->willThrowException(new \RuntimeException('no design theme under emulation'));
 
-        $applied = null;
-        $template->method('setTemplateText')->willReturnCallback(
-            static function (string $text) use (&$applied, $template) {
-                $applied = $text;
-
-                return $template;
-            }
-        );
-
         $this->logger->expects(self::once())
             ->method('warning')
             ->with(self::stringContains('no design theme under emulation'));
@@ -686,7 +796,7 @@ class EmailTemplatePluginTest extends TestCase
         $this->plugin->afterLoadDefault($template, $template, self::TEMPLATE_ID);
 
         self::assertSame([self::TEMPLATE_ID], $this->lookups[0][0]);
-        self::assertSame('rung-8', $applied);
+        self::assertSame('rung-8', $template->getData('template_text'));
     }
 
     // -------------------------------------------------------------------------------------
@@ -701,33 +811,28 @@ class EmailTemplatePluginTest extends TestCase
      */
     private function applyAndCaptureContent(?string $themeCode): ?string
     {
-        $applied = null;
-
         $template = $this->template($themeCode);
-        $template->method('setTemplateText')->willReturnCallback(
-            static function (string $text) use (&$applied, $template) {
-                $applied = $text;
-
-                return $template;
-            }
-        );
 
         $this->plugin->afterLoadDefault($template, $template, self::TEMPLATE_ID);
 
-        return $applied;
+        $applied = $template->getData('template_text');
+
+        return is_string($applied) ? $applied : null;
     }
 
     /**
      * Build a template mock reporting the given design theme
      *
      * @param string|null $themeCode
+     * @param int $type AbstractTemplate::TYPE_HTML or TYPE_TEXT
      * @return AbstractTemplate&MockObject
      */
-    private function template(?string $themeCode): AbstractTemplate&MockObject
+    private function template(?string $themeCode, int $type = AbstractTemplate::TYPE_HTML): AbstractTemplate&MockObject
     {
         $template = $this->templateMock();
         $template->method('getDesignParams')
             ->willReturn($themeCode === null ? [] : ['theme' => $themeCode]);
+        $template->method('getType')->willReturn($type);
 
         return $template;
     }
@@ -735,10 +840,9 @@ class EmailTemplatePluginTest extends TestCase
     /**
      * Build a bare template mock
      *
-     * getDesignParams() is declared on the class, so it is stubbed with onlyMethods; the
-     * template_text/template_subject writers are column writes served by __call and exist only
-     * once addMethods declares them. getType() and getFilterFactory() are abstract and have to be
-     * listed as well, because a restricted mock implements nothing it was not asked to.
+     * Only what the plugin reads and the abstract methods are replaced. The template text and
+     * subject writers are left real - declared on the class in some releases, served by the data
+     * object's magic in others - so what the overlay wrote is read back from the template's data.
      *
      * @return AbstractTemplate&MockObject
      */
@@ -747,7 +851,6 @@ class EmailTemplatePluginTest extends TestCase
         return $this->getMockBuilder(AbstractTemplate::class)
             ->disableOriginalConstructor()
             ->onlyMethods(['getDesignParams', 'getType', 'getFilterFactory'])
-            ->addMethods(['setTemplateText', 'setTemplateSubject'])
             ->getMock();
     }
 
@@ -765,6 +868,20 @@ class EmailTemplatePluginTest extends TestCase
         $storeManager = $this->createMock(StoreManagerInterface::class);
         $storeManager->method('getStore')->willReturn($store);
 
+        return $this->pluginWith($storeManager, $this->recordingInliner());
+    }
+
+    /**
+     * Build the plugin around the test's doubles and the real stylesheet collector
+     *
+     * @param StoreManagerInterface $storeManager
+     * @param CssInlinerInterface $inliner
+     * @return EmailTemplatePlugin
+     */
+    private function pluginWith(
+        StoreManagerInterface $storeManager,
+        CssInlinerInterface $inliner
+    ): EmailTemplatePlugin {
         $timezone = $this->createMock(TimezoneInterface::class);
         $timezone->method('date')->willReturn(new \DateTime(self::NOW));
 
@@ -773,16 +890,104 @@ class EmailTemplatePluginTest extends TestCase
             $this->overrideRepository,
             $this->themeRepository,
             $this->createMock(UtilityCssGeneratorInterface::class),
-            $this->createMock(CssInlinerInterface::class),
+            $inliner,
             $storeManager,
             $this->logger,
             $this->pluginBypassFlag,
             $this->editorContextFlag,
-            $this->cssVariableResolver,
-            $this->layerFlattener,
-            $this->importantPromoter,
+            $this->stylesheets,
             $timezone
         );
+    }
+
+    /**
+     * An inliner that records what it was asked to inline and tags the markup it returns
+     *
+     * @return CssInlinerInterface
+     */
+    private function recordingInliner(): CssInlinerInterface
+    {
+        $inliner = $this->createMock(CssInlinerInterface::class);
+        $inliner->method('inline')->willReturnCallback(
+            function (string $html, ?string $custom = null, ?string $utility = null, ?string $theme = null): string {
+                $this->inlined[] = [$html, $custom, $utility, $theme];
+
+                return '[inlined]' . $html;
+            }
+        );
+
+        return $inliner;
+    }
+
+    /**
+     * The module's real inliner, flattening, resolving and promoting as an installation does
+     *
+     * @return CssInlinerInterface
+     */
+    private function realInliner(): CssInlinerInterface
+    {
+        $scanner = new CssSyntaxScanner();
+        $parser = new CssStructureParser($scanner);
+
+        return new CssInliner(
+            new CssVariableResolver(new CssColorConverter(new ColorParser(), new ColorMixer()), $parser, $scanner),
+            new NullLogger(),
+            new CssLayerFlattener($parser),
+            new CssImportantPromoter($parser)
+        );
+    }
+
+    /**
+     * Render a template through the plugin, the way Magento's interceptor does
+     *
+     * @param EmailTemplatePlugin $plugin
+     * @param AbstractTemplate $template
+     * @param callable(): string $render What the template's own processing produces
+     * @return string
+     */
+    private function render(EmailTemplatePlugin $plugin, AbstractTemplate $template, callable $render): string
+    {
+        return $plugin->aroundGetProcessedTemplate(
+            $template,
+            static fn (array $variables): string => $render(),
+            []
+        );
+    }
+
+    /**
+     * A template's own processing that fails, as a filter error does
+     *
+     * @return callable(): string
+     */
+    private function failingRender(): callable
+    {
+        return static function (): string {
+            throw new \RuntimeException('filter failed');
+        };
+    }
+
+    /**
+     * Load a template through the overlay with an override carrying the given utility CSS
+     *
+     * @param string $identifier
+     * @param string $utilityCss
+     * @param int $type AbstractTemplate::TYPE_HTML or TYPE_TEXT
+     * @return AbstractTemplate&MockObject
+     */
+    private function loadedWithCss(
+        string $identifier,
+        string $utilityCss,
+        int $type = AbstractTemplate::TYPE_HTML
+    ): AbstractTemplate&MockObject {
+        $this->candidates = $this->group([
+            $this->override(1, $identifier, 0, 'body of ' . $identifier, null, null, true, $utilityCss),
+        ]);
+
+        $template = $this->template(null, $type);
+        $this->plugin->afterLoadDefault($template, $template, $identifier);
+        $this->plugin->_resetState();
+
+        return $template;
     }
 
     /**

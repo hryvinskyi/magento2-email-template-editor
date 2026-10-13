@@ -57,7 +57,7 @@ class WritabilityVerdictTest extends TestCase
     /**
      * @return array<string, array{string}>
      */
-    public function blankReasonProvider(): array
+    public static function blankReasonProvider(): array
     {
         return [
             'empty' => [''],

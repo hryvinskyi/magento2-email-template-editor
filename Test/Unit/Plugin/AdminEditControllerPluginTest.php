@@ -16,10 +16,26 @@ use Magento\Email\Controller\Adminhtml\Email\Template\Edit;
 use Magento\Email\Model\BackendTemplate;
 use Magento\Email\Model\BackendTemplateFactory;
 use Magento\Email\Model\Template\Config as EmailConfig;
+use Magento\Framework\Acl;
+use Magento\Framework\Acl\AclResource;
+use Magento\Framework\Acl\AclResource\Config\Converter\Dom as AclConverter;
+use Magento\Framework\Acl\AclResource\Config\Reader\Filesystem as AclReader;
+use Magento\Framework\Acl\AclResource\Config\SchemaLocator as AclSchemaLocator;
+use Magento\Framework\Acl\AclResource\Provider as AclResourceProvider;
+use Magento\Framework\Acl\AclResource\TreeBuilder;
+use Magento\Framework\Acl\AclResourceFactory;
+use Magento\Framework\Acl\Data\CacheInterface as AclDataCacheInterface;
+use Magento\Framework\Acl\Loader\ResourceLoader;
+use Magento\Framework\App\Arguments\ValidationState;
 use Magento\Framework\App\RequestInterface;
 use Magento\Framework\AuthorizationInterface;
+use Magento\Framework\Component\ComponentRegistrar;
+use Magento\Framework\Config\Dom\UrnResolver;
+use Magento\Framework\Config\FileResolverInterface;
 use Magento\Framework\Controller\Result\Redirect;
 use Magento\Framework\Controller\Result\RedirectFactory;
+use Magento\Framework\ObjectManagerInterface;
+use Magento\Framework\Serialize\Serializer\Json;
 use Magento\Store\Api\Data\StoreInterface;
 use Magento\Store\Model\StoreManagerInterface;
 use PHPUnit\Framework\MockObject\MockObject;
@@ -60,21 +76,52 @@ class AdminEditControllerPluginTest extends TestCase
         ['value' => self::OTHER_CODE, 'label' => 'New Account', 'group' => 'Customer'],
     ];
 
-    private ConfigInterface&MockObject $config;
-    private RedirectFactory&MockObject $redirectFactory;
-    private Redirect&MockObject $redirect;
-    private BackendTemplateFactory&MockObject $templateFactory;
-    private AuthorizationInterface&MockObject $authorization;
-    private EmailConfig&MockObject $emailConfig;
+    /**
+     * @var ConfigInterface&MockObject
+     */
+    private MockObject $config;
+
+    /**
+     * @var RedirectFactory&MockObject
+     */
+    private MockObject $redirectFactory;
+
+    /**
+     * @var Redirect&MockObject
+     */
+    private MockObject $redirect;
+
+    /**
+     * @var BackendTemplateFactory&MockObject
+     */
+    private MockObject $templateFactory;
+
+    /**
+     * @var AuthorizationInterface&MockObject
+     */
+    private MockObject $authorization;
+
+    /**
+     * @var EmailConfig&MockObject
+     */
+    private MockObject $emailConfig;
+
+    /**
+     * @var AdminEditControllerPlugin
+     */
     private AdminEditControllerPlugin $plugin;
 
     /**
      * Whether the role under test holds the resource the plugin asks about
+     *
+     * @var bool
      */
     private bool $granted = true;
 
     /**
      * How many times the core action was allowed to run
+     *
+     * @var int
      */
     private int $proceedCalls = 0;
 
@@ -87,13 +134,15 @@ class AdminEditControllerPluginTest extends TestCase
 
     /**
      * How many times the registered template list was walked
+     *
+     * @var int
      */
     private int $templateListReads = 0;
 
     /**
      * Every redirect the plugin built, as [path, params]
      *
-     * @var list<array{0: string, 1: array<string, mixed>}>
+     * @var list<array{0: string, 1: array<mixed>}>
      */
     private array $redirects = [];
 
@@ -104,6 +153,11 @@ class AdminEditControllerPluginTest extends TestCase
 
         $this->redirect = $this->createMock(Redirect::class);
         $this->redirect->method('setPath')->willReturnCallback(
+            /**
+             * @param string $path
+             * @param array<string, mixed> $params
+             * @return Redirect
+             */
             function (string $path, array $params = []): Redirect {
                 $this->redirects[] = [$path, $params];
 
@@ -193,15 +247,16 @@ class AdminEditControllerPluginTest extends TestCase
         // asking whether the role has blanket access, so a full administrator would keep being
         // redirected while every restricted role silently stopped being - the hardest shape of
         // this bug to notice, because it works for whoever is testing it.
-        $acl = simplexml_load_file(dirname(__DIR__, 3) . '/etc/acl.xml');
-        self::assertNotFalse($acl);
+        // So the resource is asked of the ACL an installation builds: Magento's own reader, schema
+        // and converter over this module's acl.xml, loaded into Magento's own Acl. A role granted the
+        // resource is only allowed it if the resource was declared - Laminas refuses a rule on one it
+        // does not know.
+        $acl = $this->aclFromModuleDeclarations();
+        $acl->addRole('editor_role');
+        $acl->allow('editor_role', EditorPage::ADMIN_RESOURCE);
 
-        $declared = [];
-        foreach ($acl->xpath('//resource[@id]') ?: [] as $resource) {
-            $declared[] = (string)$resource['id'];
-        }
-
-        self::assertContains(EditorPage::ADMIN_RESOURCE, $declared);
+        self::assertTrue($acl->hasResource(EditorPage::ADMIN_RESOURCE));
+        self::assertTrue($acl->isAllowed('editor_role', EditorPage::ADMIN_RESOURCE));
     }
 
     public function testNoPermissionIsAskedAboutWhileTheModuleIsDisabled(): void
@@ -337,7 +392,7 @@ class AdminEditControllerPluginTest extends TestCase
         $template = $this->templateMock();
         $template->method('load')->willReturnSelf();
         $template->method('getId')->willReturn(null);
-        $template->method('getOrigTemplateCode')->willReturn(self::ORIG_CODE);
+        $template->setData('orig_template_code', self::ORIG_CODE);
         $this->templateFactory->method('create')->willReturn($template);
 
         $result = $this->runPlugin(self::LEGACY_ID);
@@ -396,7 +451,7 @@ class AdminEditControllerPluginTest extends TestCase
      */
     private function proceed(): callable
     {
-        return function (): null {
+        return function () {
             $this->proceedCalls++;
 
             return null;
@@ -415,17 +470,93 @@ class AdminEditControllerPluginTest extends TestCase
         $template = $this->templateMock();
         $template->method('load')->willReturnSelf();
         $template->method('getId')->willReturn(self::LEGACY_ID);
-        $template->method('getOrigTemplateCode')->willReturn($origCode);
-        $template->method('getTemplateCode')->willReturn($templateCode);
+        $template->setData('orig_template_code', $origCode);
+        $template->setData('template_code', $templateCode);
 
         $this->templateFactory->method('create')->willReturn($template);
     }
 
     /**
+     * The ACL Magento builds from this module's resource declarations
+     *
+     * Merged over Magento_Backend's, which this module depends on and nests its resources under, in
+     * the order an installation reads them: the backend titles the ancestors this module only names.
+     *
+     * @return Acl
+     */
+    private function aclFromModuleDeclarations(): Acl
+    {
+        $registrar = new ComponentRegistrar();
+        $etcDirectories = [
+            $registrar->getPath(ComponentRegistrar::MODULE, 'Magento_Backend') . '/etc',
+            dirname(__DIR__, 3) . '/etc',
+        ];
+        $fileResolver = new class ($etcDirectories) implements FileResolverInterface {
+            /**
+             * @param string[] $etcDirectories
+             */
+            public function __construct(private readonly array $etcDirectories)
+            {
+            }
+
+            /**
+             * @inheritDoc
+             *
+             * @return array<string, string>
+             */
+            public function get($filename, $scope)
+            {
+                $files = [];
+                foreach ($this->etcDirectories as $etc) {
+                    $path = $etc . '/' . $filename;
+                    if (is_file($path)) {
+                        $files[$path] = (string)file_get_contents($path);
+                    }
+                }
+
+                return $files;
+            }
+        };
+
+        $reader = new AclReader(
+            $fileResolver,
+            new AclConverter(),
+            new AclSchemaLocator(new UrnResolver()),
+            new ValidationState('developer')
+        );
+
+        $cache = $this->createMock(AclDataCacheInterface::class);
+        $cache->method('load')->willReturn(false);
+
+        $objectManager = $this->createMock(ObjectManagerInterface::class);
+        $objectManager->method('create')->willReturnCallback(
+            /**
+             * @param string $type
+             * @param array{resourceId: string} $arguments
+             * @return AclResource
+             */
+            static function (string $type, array $arguments): AclResource {
+                $resourceId = $arguments['resourceId'] ?? null;
+                self::assertIsString($resourceId);
+
+                return new AclResource($resourceId);
+            }
+        );
+
+        $acl = new Acl();
+        (new ResourceLoader(
+            new AclResourceProvider($reader, new TreeBuilder(), $cache, new Json()),
+            new AclResourceFactory($objectManager)
+        ))->populateAcl($acl);
+
+        return $acl;
+    }
+
+    /**
      * Build a legacy template row mock
      *
-     * The two code accessors are column reads served by __call, so they exist only once addMethods
-     * declares them; load() and getId() are real methods and have to be stubbed as ones.
+     * The two codes are column reads served by __call, so a row carries them as data exactly as a
+     * loaded one does; load() and getId() are real methods and are stubbed as ones.
      *
      * @return BackendTemplate&MockObject
      */
@@ -434,7 +565,6 @@ class AdminEditControllerPluginTest extends TestCase
         return $this->getMockBuilder(BackendTemplate::class)
             ->disableOriginalConstructor()
             ->onlyMethods(['load', 'getId'])
-            ->addMethods(['getOrigTemplateCode', 'getTemplateCode'])
             ->getMock();
     }
 

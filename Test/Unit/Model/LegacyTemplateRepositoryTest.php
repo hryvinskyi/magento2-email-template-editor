@@ -22,7 +22,14 @@ use Psr\Log\LoggerInterface;
 
 class LegacyTemplateRepositoryTest extends TestCase
 {
+    /**
+     * @var MockObject
+     */
     private MockObject $collectionFactory;
+
+    /**
+     * @var LegacyTemplateRepository
+     */
     private LegacyTemplateRepository $repository;
 
     protected function setUp(): void
@@ -42,7 +49,7 @@ class LegacyTemplateRepositoryTest extends TestCase
     /**
      * @return array<string, array{0: string[]}>
      */
-    public function emptyCodeProvider(): array
+    public static function emptyCodeProvider(): array
     {
         return [
             'no codes at all' => [[]],
@@ -115,8 +122,9 @@ class LegacyTemplateRepositoryTest extends TestCase
      * compiled does not exist at all and only addMethods() can declare it. A clean recompile
      * flips which case applies, so the branch is picked at runtime.
      *
-     * @param class-string $factoryClass
-     * @return MockObject
+     * @template T of object
+     * @param class-string<T> $factoryClass
+     * @return T&MockObject
      */
     private function mockFactory(string $factoryClass): MockObject
     {

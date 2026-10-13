@@ -9,20 +9,19 @@ declare(strict_types=1);
 
 namespace Hryvinskyi\EmailTemplateEditor\Test\Unit\Model\Knowledge;
 
-use DOMDocument;
-use DOMElement;
-use DOMXPath;
 use Hryvinskyi\EmailTemplateEditor\Api\Data\Knowledge\ModifierDescriptorInterface;
+use Hryvinskyi\EmailTemplateEditor\Api\Knowledge\ModifierRegistryInterface;
 use Hryvinskyi\EmailTemplateEditor\Model\Knowledge\Data\ModifierDescriptor;
 use Hryvinskyi\EmailTemplateEditor\Model\Knowledge\ModifierRegistry;
+use Hryvinskyi\EmailTemplateEditor\Test\Unit\Container\ModuleContainer;
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
-use RuntimeException;
+use ReflectionClass;
 use stdClass;
 
 /**
- * The registry is exercised twice over: with descriptors built here, for its own behaviour, and with
- * the descriptors this module actually ships, read out of the wiring. The second half is the point.
+ * The registry is exercised twice over: with descriptors built here, for its own behaviour, and as
+ * Magento's object manager builds it from this module's wiring. The second half is the point.
  * A vocabulary is only useful if it is true, and what makes it true or false is what was written in
  * configuration, which nothing else in the test suite would ever look at.
  */
@@ -183,7 +182,9 @@ class ModifierRegistryTest extends TestCase
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage('must implement');
 
-        new ModifierRegistry(['escape' => new stdClass()]);
+        // Built reflectively because the pool's declared type already rules this member out; what is
+        // proved is that the registry refuses it at run time too, where the wiring is not type-checked.
+        (new ReflectionClass(ModifierRegistry::class))->newInstance(['escape' => new stdClass()]);
     }
 
     /**
@@ -204,138 +205,19 @@ class ModifierRegistryTest extends TestCase
     }
 
     /**
-     * Build a registry from the descriptors this module wires, in the order the wiring asks for
+     * The registry an installation hands out, built by Magento's object manager from etc/di.xml
      *
-     * The descriptors are constructed rather than read as data, so that a declaration that could not
-     * produce a valid descriptor fails here instead of on an install.
+     * The container constructs every wired descriptor and sorts the pool exactly as an installation
+     * does, so a declaration that could not produce a valid descriptor, or a pool the merge left
+     * empty or doubled, fails here instead of on an install.
      *
-     * @return ModifierRegistry
+     * @return ModifierRegistryInterface
      */
-    private function shippedRegistry(): ModifierRegistry
+    private function shippedRegistry(): ModifierRegistryInterface
     {
-        $document = new DOMDocument();
-        $document->load(dirname(__DIR__, 4) . '/etc/di.xml');
-        $xpath = new DOMXPath($document);
+        $registry = (new ModuleContainer())->build()->get(ModifierRegistryInterface::class);
+        self::assertInstanceOf(ModifierRegistryInterface::class, $registry);
 
-        $items = [];
-        $query = sprintf(
-            '/config/type[@name="%s"]/arguments/argument[@name="descriptors"]/item',
-            ModifierRegistry::class
-        );
-
-        foreach ($xpath->query($query) ?: [] as $item) {
-            /** @var DOMElement $item */
-            $items[] = [
-                'name' => $item->getAttribute('name'),
-                'sortOrder' => (int)$item->getAttribute('sortOrder'),
-                'virtualType' => trim((string)$item->nodeValue),
-            ];
-        }
-
-        self::assertNotSame([], $items, 'The modifier registry is wired with no descriptors.');
-
-        // The wired order is the sortOrder order, exactly as an array argument is sorted before it
-        // reaches a constructor. Where the file happens to list them is not the contract.
-        usort($items, static fn (array $first, array $second): int => $first['sortOrder'] <=> $second['sortOrder']);
-
-        $descriptors = [];
-
-        foreach ($items as $item) {
-            $arguments = $this->readVirtualTypeArguments($xpath, $item['virtualType']);
-            $argumentSpec = $arguments['argumentSpec'] ?? [];
-
-            $descriptors[$item['name']] = new ModifierDescriptor(
-                $this->readWiredText($arguments, 'name', $item['virtualType']),
-                $this->readWiredText($arguments, 'label', $item['virtualType']),
-                $this->readWiredText($arguments, 'description', $item['virtualType']),
-                ($arguments['implemented'] ?? true) === true,
-                is_array($argumentSpec) ? $argumentSpec : []
-            );
-        }
-
-        return new ModifierRegistry($descriptors);
-    }
-
-    /**
-     * Read the arguments of one wired virtual type
-     *
-     * @param DOMXPath $xpath Query over the wiring
-     * @param string $virtualType Name of the virtual type to read
-     * @return array<string, mixed> Arguments, keyed by argument name
-     */
-    private function readVirtualTypeArguments(DOMXPath $xpath, string $virtualType): array
-    {
-        $nodes = $xpath->query(sprintf('/config/virtualType[@name="%s"]/arguments/argument', $virtualType));
-
-        self::assertNotSame(
-            0,
-            $nodes === false ? 0 : $nodes->length,
-            sprintf('The wiring names "%s", but nothing declares it.', $virtualType)
-        );
-
-        $arguments = [];
-
-        foreach ($nodes ?: [] as $node) {
-            /** @var DOMElement $node */
-            $arguments[$node->getAttribute('name')] = $this->readValue($node);
-        }
-
-        return $arguments;
-    }
-
-    /**
-     * Read one wired argument that has to be text
-     *
-     * @param array<string, mixed> $arguments Arguments of the virtual type
-     * @param string $name Argument to read
-     * @param string $virtualType Virtual type being read, so a message points at the wiring
-     * @return string
-     * @throws RuntimeException When the argument is missing or is not text
-     */
-    private function readWiredText(array $arguments, string $name, string $virtualType): string
-    {
-        $value = $arguments[$name] ?? null;
-
-        if (!is_string($value)) {
-            throw new RuntimeException(
-                sprintf('The wiring of "%s" must declare "%s" as text.', $virtualType, $name)
-            );
-        }
-
-        return $value;
-    }
-
-    /**
-     * Turn one wired argument or item into the value it stands for
-     *
-     * Only the three shapes this wiring uses are understood; anything else is reported rather than
-     * quietly read as text.
-     *
-     * @param DOMElement $node Argument or item element
-     * @return mixed
-     */
-    private function readValue(DOMElement $node): mixed
-    {
-        $type = $node->getAttributeNS('http://www.w3.org/2001/XMLSchema-instance', 'type');
-
-        if ($type === 'array') {
-            $value = [];
-
-            foreach ($node->childNodes as $child) {
-                if ($child instanceof DOMElement && $child->tagName === 'item') {
-                    $value[$child->getAttribute('name')] = $this->readValue($child);
-                }
-            }
-
-            return $value;
-        }
-
-        if ($type === 'boolean') {
-            return in_array(trim((string)$node->nodeValue), ['true', '1'], true);
-        }
-
-        self::assertSame('string', $type, sprintf('Unsupported wiring value type "%s".', $type));
-
-        return (string)$node->nodeValue;
+        return $registry;
     }
 }

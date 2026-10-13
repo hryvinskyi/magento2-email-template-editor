@@ -9,14 +9,18 @@ declare(strict_types=1);
 
 namespace Hryvinskyi\EmailTemplateEditor\Model;
 
-use Hryvinskyi\EmailTemplateEditor\Api\CssInlinerInterface;
+use Hryvinskyi\EmailTemplateEditor\Api\Css\EmailStylesheetCollectorInterface;
 use Hryvinskyi\EmailTemplateEditor\Api\EditorContextFlagInterface;
+use Hryvinskyi\EmailTemplateEditor\Api\PreviewPlaceholderInterface;
 use Hryvinskyi\EmailTemplateEditor\Api\TemplateAreaResolverInterface;
+use Hryvinskyi\EmailTemplateEditor\Api\TemplatePreviewFramerInterface;
 use Hryvinskyi\EmailTemplateEditor\Api\TemplateRendererInterface;
 use Hryvinskyi\EmailTemplateEditor\Api\ThemeRepositoryInterface;
 use Hryvinskyi\EmailTemplateEditor\Api\UtilityCssGeneratorInterface;
+use Magento\Email\Model\Template;
 use Magento\Email\Model\TemplateFactory;
 use Magento\Framework\App\State;
+use Magento\Framework\Escaper;
 use Magento\Store\Model\App\Emulation;
 use Magento\Store\Model\StoreManagerInterface;
 use Psr\Log\LoggerInterface;
@@ -25,7 +29,7 @@ class TemplateRenderer implements TemplateRendererInterface
 {
     /**
      * @param TemplateAreaResolverInterface $areaResolver
-     * @param CssInlinerInterface $cssInliner
+     * @param EmailStylesheetCollectorInterface $stylesheets
      * @param UtilityCssGeneratorInterface $utilityCssGenerator
      * @param ThemeRepositoryInterface $themeRepository
      * @param State $appState
@@ -33,10 +37,14 @@ class TemplateRenderer implements TemplateRendererInterface
      * @param TemplateFactory $templateFactory
      * @param StoreManagerInterface $storeManager
      * @param LoggerInterface $logger
+     * @param EditorContextFlagInterface $editorContextFlag
+     * @param TemplatePreviewFramerInterface $previewFramer
+     * @param PreviewPlaceholderInterface $placeholder
+     * @param Escaper $escaper
      */
     public function __construct(
         private readonly TemplateAreaResolverInterface $areaResolver,
-        private readonly CssInlinerInterface $cssInliner,
+        private readonly EmailStylesheetCollectorInterface $stylesheets,
         private readonly UtilityCssGeneratorInterface $utilityCssGenerator,
         private readonly ThemeRepositoryInterface $themeRepository,
         private readonly State $appState,
@@ -44,7 +52,10 @@ class TemplateRenderer implements TemplateRendererInterface
         private readonly TemplateFactory $templateFactory,
         private readonly StoreManagerInterface $storeManager,
         private readonly LoggerInterface $logger,
-        private readonly EditorContextFlagInterface $editorContextFlag
+        private readonly EditorContextFlagInterface $editorContextFlag,
+        private readonly TemplatePreviewFramerInterface $previewFramer,
+        private readonly PreviewPlaceholderInterface $placeholder,
+        private readonly Escaper $escaper
     ) {
     }
 
@@ -78,6 +89,11 @@ class TemplateRenderer implements TemplateRendererInterface
                 $storeId = (int)$this->getDefaultFrontendStoreId();
             }
 
+            // A header or footer is half of a document; framed, it renders as the email it is part of.
+            if ($templateIdentifier !== null) {
+                $content = $this->previewFramer->frame($templateIdentifier, $content, $storeId);
+            }
+
             if ($isMockData) {
                 $content = $this->replaceLayoutDirectives($content);
             }
@@ -86,34 +102,23 @@ class TemplateRenderer implements TemplateRendererInterface
             $emulationStarted = true;
 
             $template = $this->templateFactory->create();
-            $template->setTemplateType(\Magento\Email\Model\Template::TYPE_HTML);
+            $template->setTemplateType(Template::TYPE_HTML);
             $template->setTemplateText($content);
 
-            // When the editor sends the currently-loaded theme CSS, use it as the token
-            // source. Otherwise fall back to the store's default theme.
+            // The draft's CSS is this template's own sheet. The render collects it together with
+            // the CSS of every header and footer the content includes and inlines the lot once,
+            // into the finished email - the same pass a real send goes through. When the editor
+            // sends the theme it is showing, that theme supplies the tokens; otherwise the store's
+            // default theme does.
             $themeCss = $themeCssOverride !== null && trim($themeCssOverride) !== ''
                 ? $this->utilityCssGenerator->generate($themeCssOverride)
                 : $this->resolveThemeCss($storeId);
-            if ($themeCss !== null && trim($themeCss) !== '') {
-                $template->setTemplateStyles($themeCss);
-            }
+            $this->stylesheets->assign($template, (string)$themeCss, (string)$tailwindCss, (string)$customCss);
 
-            $processedContent = $this->appState->emulateAreaCode(
-                $area,
-                function () use ($template, $variables): string {
-                    return $template->getProcessedTemplate($variables);
-                }
-            );
+            $processedContent = $this->processInArea($area, $template, $variables);
 
             $this->appEmulation->stopEnvironmentEmulation();
             $emulationStarted = false;
-
-            $processedContent = $this->cssInliner->inline(
-                $processedContent,
-                $customCss,
-                $tailwindCss,
-                $themeCss
-            );
 
             return $processedContent;
         } catch (\Exception $e) {
@@ -121,8 +126,9 @@ class TemplateRenderer implements TemplateRendererInterface
                 'exception' => $e,
             ]);
 
+            // escapeHtmlAttr() without single-quote escaping is escapeHtml() for a string, typed as one.
             return '<div style="color:red;padding:20px;">Rendering Error: '
-                . htmlspecialchars($e->getMessage()) . '</div>';
+                . $this->escaper->escapeHtmlAttr($e->getMessage(), false) . '</div>';
         } finally {
             if ($emulationStarted) {
                 $this->appEmulation->stopEnvironmentEmulation();
@@ -133,7 +139,7 @@ class TemplateRenderer implements TemplateRendererInterface
     }
 
     /**
-     * {@inheritDoc}
+     * @inheritDoc
      */
     public function renderPlain(
         string $text,
@@ -156,15 +162,10 @@ class TemplateRenderer implements TemplateRendererInterface
             $emulationStarted = true;
 
             $template = $this->templateFactory->create();
-            $template->setTemplateType(\Magento\Email\Model\Template::TYPE_TEXT);
+            $template->setTemplateType(Template::TYPE_TEXT);
             $template->setTemplateText($text);
 
-            $result = $this->appState->emulateAreaCode(
-                $area,
-                function () use ($template, $variables): string {
-                    return $template->getProcessedTemplate($variables);
-                }
-            );
+            $result = $this->processInArea($area, $template, $variables);
 
             $this->appEmulation->stopEnvironmentEmulation();
             $emulationStarted = false;
@@ -181,6 +182,29 @@ class TemplateRenderer implements TemplateRendererInterface
                 $this->appEmulation->stopEnvironmentEmulation();
             }
         }
+    }
+
+    /**
+     * Process a template's directives with the given area's design loaded
+     *
+     * @param string $area
+     * @param Template $template
+     * @param array<string,mixed> $variables
+     * @return string
+     * @throws \Exception When processing fails or yields no text
+     */
+    private function processInArea(string $area, Template $template, array $variables): string
+    {
+        $processed = $this->appState->emulateAreaCode(
+            $area,
+            static fn (): string => $template->getProcessedTemplate($variables)
+        );
+
+        if (!is_string($processed)) {
+            throw new \UnexpectedValueException('Template processing returned no text.');
+        }
+
+        return $processed;
     }
 
     /**
@@ -211,7 +235,8 @@ class TemplateRenderer implements TemplateRendererInterface
      */
     private function replaceLayoutDirectives(string $content): string
     {
-        return (string)preg_replace_callback(
+        // A failed match run answers null; casting that to a string would blank the whole email.
+        return preg_replace_callback(
             '/\{\{layout\s+([^}]*)\}\}/i',
             function (array $matches): string {
                 $handle = '';
@@ -220,15 +245,12 @@ class TemplateRenderer implements TemplateRendererInterface
                     $handle = $handleMatch[1];
                 }
 
-                $label = $handle !== '' ? htmlspecialchars($handle) : 'layout block';
+                $label = $handle !== '' ? $handle : (string)__('layout block');
 
-                return '<table style="width:100%;border:1px dashed #e3e3e3;border-radius:4px;margin:12px 0;">'
-                    . '<tr><td style="padding:20px;text-align:center;color:#999;font-size:13px;font-style:italic;">'
-                    . '[ ' . $label . ' — requires real data to render ]'
-                    . '</td></tr></table>';
+                return $this->placeholder->render((string)__('%1 requires real data to render', $label));
             },
             $content
-        );
+        ) ?? $content;
     }
 
     /**
@@ -257,7 +279,7 @@ class TemplateRenderer implements TemplateRendererInterface
             $stores = $this->storeManager->getStores(false);
 
             foreach ($stores as $store) {
-                if ($store->isActive()) {
+                if ((bool)$store->getIsActive()) {
                     return (int)$store->getId();
                 }
             }

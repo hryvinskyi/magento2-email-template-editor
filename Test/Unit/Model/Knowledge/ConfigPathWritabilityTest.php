@@ -43,10 +43,19 @@ class ConfigPathWritabilityTest extends TestCase
         'general/store_information/city',
     ];
 
-    private Structure&MockObject $configStructure;
+    /**
+     * @var Structure&MockObject
+     */
+    private MockObject $configStructure;
 
-    private ConfigVariables&MockObject $configVariables;
+    /**
+     * @var ConfigVariables&MockObject
+     */
+    private MockObject $configVariables;
 
+    /**
+     * @var ConfigPathWritability
+     */
     private ConfigPathWritability $writability;
 
     /**
@@ -182,7 +191,7 @@ class ConfigPathWritabilityTest extends TestCase
     /**
      * @return array<string, array{string, int}>
      */
-    public function baseUrlPathProvider(): array
+    public static function baseUrlPathProvider(): array
     {
         return [
             'unsecure at default scope' => ['web/unsecure/base_url', 0],
@@ -219,7 +228,7 @@ class ConfigPathWritabilityTest extends TestCase
     /**
      * @return array<string, array{string, int}>
      */
-    public function renderedDifferentlyPathProvider(): array
+    public static function renderedDifferentlyPathProvider(): array
     {
         return [
             'country at default scope' => ['general/store_information/country_id', 0],
